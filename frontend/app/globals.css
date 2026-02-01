@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0f0f23;
+  --foreground: #e0e7ff;
+  --accent-primary: #8b5cf6;
+  --accent-secondary: #06b6d4;
+  --card-bg: rgba(139, 92, 246, 0.1);
+  --card-border: rgba(139, 92, 246, 0.3);
+  --card-hover-bg: rgba(139, 92, 246, 0.2);
+  --card-hover-border: rgba(139, 92, 246, 0.6);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: linear-gradient(135deg, #0f0f23 0%, #1a1a3e 50%, #0f0f23 100%);
+  background-attachment: fixed;
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+  min-height: 100vh;
+}
