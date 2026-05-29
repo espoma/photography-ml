@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 
@@ -12,6 +12,14 @@ export default function UploadPage() {
     const [uploading, setUploading] = useState(false);
     const [error, setError] = useState('');
     const [preview, setPreview] = useState<string | null>(null);
+    const [authToken, setAuthToken] = useState<string | null>(null);
+
+    useEffect(() => {
+        const token = localStorage.getItem('authToken');
+        if (token) {
+            setAuthToken(token);
+        }
+    }, []);
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const selectedFile = e.target.files?.[0];
@@ -19,7 +27,6 @@ export default function UploadPage() {
             setFile(selectedFile);
             setError('');
 
-            // Create preview
             const reader = new FileReader();
             reader.onloadend = () => {
                 setPreview(reader.result as string);
@@ -49,6 +56,11 @@ export default function UploadPage() {
         e.preventDefault();
     };
 
+    const handleLogout = () => {
+        localStorage.removeItem('authToken');
+        setAuthToken(null);
+    };
+
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
 
@@ -68,7 +80,6 @@ export default function UploadPage() {
                 formData.append('description', description);
             }
 
-            // Split tags by comma and add each one
             if (tags) {
                 const tagArray = tags.split(',').map(tag => tag.trim()).filter(tag => tag);
                 tagArray.forEach(tag => {
@@ -79,19 +90,19 @@ export default function UploadPage() {
             const response = await fetch('http://localhost:8000/images/', {
                 method: 'POST',
                 body: formData,
+                headers: authToken ? { Authorization: `Bearer ${authToken}` } : undefined,
             });
 
             if (!response.ok) {
-                throw new Error('Upload failed');
+                const body = await response.json().catch(() => null);
+                throw new Error(body?.detail || 'Upload failed');
             }
 
             const data = await response.json();
             console.log('Upload successful:', data);
-
-            // Redirect to gallery
             router.push('/gallery');
         } catch (err) {
-            setError('Failed to upload image. Make sure the backend is running.');
+            setError(err instanceof Error ? err.message : 'Failed to upload image. Make sure the backend is running.');
             console.error(err);
         } finally {
             setUploading(false);
@@ -101,8 +112,21 @@ export default function UploadPage() {
     return (
         <div className="min-h-screen p-8">
             <div className="max-w-3xl mx-auto">
-                {/* Header */}
                 <div className="mb-8">
+                    <div className="flex items-center justify-between gap-4 mb-4 rounded-2xl border border-purple-500/20 bg-purple-900/80 px-4 py-3 text-sm text-gray-200">
+                        {authToken ? (
+                            <>
+                                <span className="text-cyan-300">Logged in with saved session</span>
+                                <button type="button" onClick={handleLogout} className="text-purple-200 hover:text-white">
+                                    Log out
+                                </button>
+                            </>
+                        ) : (
+                            <span className="text-gray-300">
+                                Upload anonymously or <Link href="/login" className="text-cyan-300 hover:text-cyan-200">log in</Link> to save uploads.
+                            </span>
+                        )}
+                    </div>
                     <Link
                         href="/"
                         className="text-cyan-400 hover:text-cyan-300 transition-colors inline-flex items-center gap-2 mb-4"
@@ -117,9 +141,7 @@ export default function UploadPage() {
                     </p>
                 </div>
 
-                {/* Upload Form */}
                 <form onSubmit={handleSubmit} className="space-y-6">
-                    {/* File Drop Zone */}
                     <div
                         onDrop={handleDrop}
                         onDragOver={handleDragOver}
@@ -167,7 +189,6 @@ export default function UploadPage() {
                         )}
                     </div>
 
-                    {/* Description */}
                     <div>
                         <label htmlFor="description" className="block text-sm font-medium text-purple-300 mb-2">
                             Description (Optional)
@@ -182,7 +203,6 @@ export default function UploadPage() {
                         />
                     </div>
 
-                    {/* Tags */}
                     <div>
                         <label htmlFor="tags" className="block text-sm font-medium text-purple-300 mb-2">
                             Tags (Optional)
@@ -200,14 +220,12 @@ export default function UploadPage() {
                         </p>
                     </div>
 
-                    {/* Error Message */}
                     {error && (
                         <div className="bg-red-500/10 border border-red-500/50 text-red-300 px-4 py-3 rounded-lg">
                             {error}
                         </div>
                     )}
 
-                    {/* Submit Button */}
                     <button
                         type="submit"
                         disabled={uploading || !file}
