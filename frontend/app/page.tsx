@@ -47,6 +47,36 @@ export default function Home() {
             View your curated collection of images.
           </p>
         </Link>
+
+        <Link
+          href="/login"
+          className="group rounded-lg border border-purple-500/30 bg-purple-900/10 px-5 py-4 transition-all duration-300 hover:border-purple-400 hover:bg-purple-900/30 hover:shadow-lg hover:shadow-purple-500/50"
+        >
+          <h2 className="mb-3 text-2xl font-semibold text-purple-300">
+            Login{' '}
+            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none text-cyan-400">
+              -&gt;
+            </span>
+          </h2>
+          <p className="m-0 max-w-[30ch] text-sm text-gray-300">
+            Sign in to associate uploads with your account.
+          </p>
+        </Link>
+
+        <Link
+          href="/signup"
+          className="group rounded-lg border border-purple-500/30 bg-purple-900/10 px-5 py-4 transition-all duration-300 hover:border-purple-400 hover:bg-purple-900/30 hover:shadow-lg hover:shadow-purple-500/50"
+        >
+          <h2 className="mb-3 text-2xl font-semibold text-purple-300">
+            Sign up{' '}
+            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none text-cyan-400">
+              -&gt;
+            </span>
+          </h2>
+          <p className="m-0 max-w-[30ch] text-sm text-gray-300">
+            Create your account and keep a personal photo history.
+          </p>
+        </Link>
       </div>
     </main>
   );
