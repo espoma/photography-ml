@@ -16,11 +16,50 @@ export default function GalleryPage() {
     const [images, setImages] = useState<Image[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
+    const [currentUser, setCurrentUser] = useState<{ username: string } | null>(null);
     const [selectedImage, setSelectedImage] = useState<Image | null>(null);
 
     useEffect(() => {
+        const token = localStorage.getItem('authToken');
+        if (token) {
+            verifyCurrentUser(token);
+        }
         fetchImages();
     }, []);
+
+    const verifyCurrentUser = async (token: string) => {
+        try {
+            const response = await fetch('http://localhost:8000/auth/me', {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                },
+            });
+
+            if (response.status === 401) {
+                // Token is invalid, clear it
+                localStorage.removeItem('authToken');
+                setCurrentUser(null);
+                return;
+            }
+
+            if (!response.ok) {
+                // Network or server error, but don't clear token
+                console.error('Failed to verify auth token:', response.status, response.statusText);
+                return;
+            }
+
+            const data = await response.json();
+            setCurrentUser(data);
+        } catch (err) {
+            // Network error, don't clear token - could be temporary
+            console.error('Network error checking auth:', err);
+        }
+    };
+
+    const handleLogout = () => {
+        localStorage.removeItem('authToken');
+        setCurrentUser(null);
+    };
 
     const fetchImages = async () => {
         try {
@@ -79,7 +118,24 @@ export default function GalleryPage() {
                         <p className="text-gray-300 mt-2">
                             {images.length} {images.length === 1 ? 'image' : 'images'} in your collection
                         </p>
+                        {currentUser ? (
+                            <p className="text-gray-300 mt-2">
+                                Logged in as <span className="text-cyan-300">{currentUser.username}</span>
+                            </p>
+                        ) : (
+                            <p className="text-gray-300 mt-2">
+                                Viewing images anonymously. <Link href="/login" className="text-cyan-300 hover:text-cyan-200">Log in</Link> to save uploads.
+                            </p>
+                        )}
                     </div>
+                    {currentUser ? (
+                        <button
+                            onClick={handleLogout}
+                            className="bg-red-600 hover:bg-red-500 text-white font-semibold py-2 px-4 rounded-lg transition-colors"
+                        >
+                            Log out
+                        </button>
+                    ) : null}
                     <Link
                         href="/upload"
                         className="bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-500 hover:to-cyan-500 text-white font-semibold py-2 px-6 rounded-lg transition-all duration-300 shadow-lg shadow-purple-500/50"
