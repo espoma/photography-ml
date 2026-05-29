@@ -1,12 +1,21 @@
 from contextlib import asynccontextmanager
 from typing import Annotated, List
-from fastapi import FastAPI, Depends, HTTPException, Query, File, UploadFile, Form
+from fastapi import FastAPI, Depends, HTTPException, Query, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, select
 from app.database import create_db_and_tables, get_session
 from app.models import Image, ImageCreate, ImagePublic, ImageUpdate
 from app.services.ml_service import generate_tags
+from app.routes import auth as auth_routes
+from app.security import get_current_user
+from app.models import User
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from fastapi.responses import JSONResponse
+from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 import shutil
 import uuid
 from pathlib import Path
@@ -35,6 +44,21 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Rate limiter (per-IP). Configure limiter and middleware.
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_middleware(SlowAPIMiddleware)
+async def _rate_limit_exceeded_handler(request, exc):
+    return JSONResponse(
+        status_code=HTTP_429_TOO_MANY_REQUESTS,
+        content={"detail": "Rate limit exceeded. Try again later."},
+    )
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Include auth router
+app.include_router(auth_routes.router)
+
 # Configure CORS to allow frontend to access the API
 app.add_middleware(
     CORSMiddleware,
@@ -60,12 +84,15 @@ def read_root():
     return {"message": "Welcome to the Photography LLM Ops API!", "status": "active"}
 
 @app.post("/images/", response_model=ImagePublic)
+@limiter.limit("10/hour")
 async def create_image(
+    request: Request,
     file: UploadFile = File(...),
     description: str = Form(None),
     # Accepts multiple tags keys: tags=a&tags=b
     tags: List[str] = Form([]), 
-    session: Session = Depends(get_session)
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_current_user)
 ):
     """
     Upload a new image and create a record in the database.
@@ -91,6 +118,9 @@ async def create_image(
         description=description,
         tags=combined_tags
     )
+    # Associate with user if authenticated
+    if current_user:
+        db_image.user_id = current_user.id
     
     # Add to the session and commit
     session.add(db_image)
