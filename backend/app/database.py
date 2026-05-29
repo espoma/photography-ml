@@ -1,9 +1,11 @@
 import os
+from pathlib import Path
 from sqlmodel import SQLModel, create_engine, Session
 from dotenv import load_dotenv
 
-# 1. Load environment variables from .env file
-load_dotenv()
+# 1. Load environment variables from backend/.env regardless of the current working directory
+env_path = Path(__file__).resolve().parent.parent / '.env'
+load_dotenv(dotenv_path=env_path)
 
 # 2. Get the Database URL
 DATABASE_URL = os.getenv("DATABASE_URL")
