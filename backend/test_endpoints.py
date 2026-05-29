@@ -1,75 +1,55 @@
-import requests
 import os
 
+import pytest
+import requests
+
 BASE_URL = "http://127.0.0.1:8000"
+TEST_FILENAME = "test_upload.txt"
 
-def test_endpoints():
-    print("1. Testing POST /images/ (Upload)...")
-    # Create a dummy file
-    with open("test_upload.txt", "w") as f:
-        f.write("dummy content")
-    
-    files = {'file': ('test_upload.txt', open('test_upload.txt', 'rb'))}
-    data = {'description': 'Initial Description', 'tags': ['test']}
-    
-    response = requests.post(f"{BASE_URL}/images/", files=files, data=data)
-    if response.status_code != 200:
-        print(f"FAILED POST: {response.text}")
-        return
-    
+
+@pytest.fixture(scope="session", autouse=True)
+def test_upload_file():
+    with open(TEST_FILENAME, "wb") as f:
+        f.write(b"dummy content")
+    yield TEST_FILENAME
+    try:
+        os.remove(TEST_FILENAME)
+    except OSError:
+        pass
+
+
+def test_image_lifecycle(test_upload_file):
+    with open(TEST_FILENAME, "rb") as upload_file:
+        files = {"file": (TEST_FILENAME, upload_file)}
+        data = {"description": "Initial Description", "tags": ["test"]}
+        response = requests.post(f"{BASE_URL}/images/", files=files, data=data)
+
+    assert response.status_code == 200, f"POST /images/ failed: {response.status_code} {response.text}"
     image_data = response.json()
-    image_id = image_data['id']
-    print(f"SUCCESS: Created Image ID {image_id}")
-    print(f"Data: {image_data}")
-    
-    print("\n2. Testing GET /images/ (List)...")
-    response = requests.get(f"{BASE_URL}/images/")
-    if response.status_code != 200:
-        print(f"FAILED GET LIST: {response.text}")
-        return
-    items = response.json()
-    found = any(item['id'] == image_id for item in items)
-    print(f"SUCCESS: Retrieved list. Found created ID? {found}")
-    
-    print(f"\n3. Testing GET /images/{image_id} (Detail)...")
-    response = requests.get(f"{BASE_URL}/images/{image_id}")
-    if response.status_code != 200:
-        print(f"FAILED GET DETAIL: {response.text}")
-        return
-    print(f"SUCCESS: Retrieved detail: {response.json()}")
+    image_id = image_data["id"]
+    assert image_data["description"] == "Initial Description"
+    assert "tags" in image_data
 
-    print(f"\n4. Testing PATCH /images/{image_id} (Update)...")
+    response = requests.get(f"{BASE_URL}/images/")
+    assert response.status_code == 200, f"GET /images/ failed: {response.status_code} {response.text}"
+    items = response.json()
+    assert any(item["id"] == image_id for item in items)
+
+    response = requests.get(f"{BASE_URL}/images/{image_id}")
+    assert response.status_code == 200, f"GET /images/{image_id} failed: {response.status_code} {response.text}"
+    assert response.json()["id"] == image_id
+
     update_data = {"description": "Updated Description"}
     response = requests.patch(f"{BASE_URL}/images/{image_id}", json=update_data)
-    if response.status_code != 200:
-        print(f"FAILED PATCH: {response.text}")
-        return
-    print(f"SUCCESS: Updated record: {response.json()}")
-    
-    # Verify update
-    response = requests.get(f"{BASE_URL}/images/{image_id}")
-    assert response.json()['description'] == "Updated Description"
-    print("Verified update persisted.")
+    assert response.status_code == 200, f"PATCH /images/{image_id} failed: {response.status_code} {response.text}"
+    assert response.json()["description"] == "Updated Description"
 
-    print(f"\n5. Testing DELETE /images/{image_id} (Delete)...")
+    response = requests.get(f"{BASE_URL}/images/{image_id}")
+    assert response.status_code == 200
+    assert response.json()["description"] == "Updated Description"
+
     response = requests.delete(f"{BASE_URL}/images/{image_id}")
-    if response.status_code != 200:
-        print(f"FAILED DELETE: {response.text}")
-        return
-    print("SUCCESS: Deleted record.")
-    
-    print(f"\n6. Testing GET /images/{image_id} (Verify Delete)...")
+    assert response.status_code == 200, f"DELETE /images/{image_id} failed: {response.status_code} {response.text}"
+
     response = requests.get(f"{BASE_URL}/images/{image_id}")
-    if response.status_code == 404:
-        print("SUCCESS: Record correctly not found (404).")
-    else:
-        print(f"FAILED: Expected 404, got {response.status_code}")
-
-    # Cleanup
-    os.remove("test_upload.txt")
-
-if __name__ == "__main__":
-    try:
-        test_endpoints()
-    except Exception as e:
-        print(f"An error occurred: {e}")
+    assert response.status_code == 404, f"Expected 404 after delete, got {response.status_code}"
