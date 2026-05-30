@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [ dev, main ]
+  pull_request:
+    branches: [ dev ]
+
+jobs:
+  backend-tests:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    services:
+      db:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: photography_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready -U user -d photography_db
+          --health-interval 10s --health-timeout 5s --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.14'
+
+      - name: Install backend dependencies
+        run: |
+          cd backend
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Wait for DB
+        run: sleep 10
+
+      - name: Start backend server
+        run: |
+          cd backend
+          nohup python -m uvicorn main:app --host 0.0.0.0 --port 8000 > uvicorn.log 2>&1 &
+          sleep 3
+
+      - name: Run endpoint integration script
+        run: |
+          cd backend
+          python test_endpoints.py
+
+      - name: Run unit tests
+        run: |
+          cd backend
+          pytest -q
