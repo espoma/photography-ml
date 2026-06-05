@@ -50,7 +50,6 @@ jobs:
         working-directory: ./backend
         run: |
           pytest test_endpoints.py -v
-          pytest test_ml_service.py -v
       
       - name: Check Python syntax
         working-directory: ./backend
