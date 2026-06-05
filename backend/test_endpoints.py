@@ -17,7 +17,7 @@ Path("static/images").mkdir(parents=True, exist_ok=True)
 # Provide defaults so database.py doesn't raise ValueError when .env is absent
 os.environ.setdefault(
     "DATABASE_URL",
-    "postgresql://photography_user:photography_password@localhost:5432/photography_db",
+    "postgresql+psycopg://photography_user:photography_password@localhost:5432/photography_db",
 )
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-ci")
 os.environ.setdefault("GEMINI_API_KEY", "test-key-for-ci")

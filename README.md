@@ -34,7 +34,7 @@ Create `backend/.env`:
 
 ```bash
 cat > backend/.env << 'EOF'
-DATABASE_URL=postgresql://photography_user:photography_password@localhost:5432/photography_db
+DATABASE_URL=postgresql+psycopg://photography_user:photography_password@localhost:5432/photography_db
 GEMINI_API_KEY=your-actual-gemini-api-key-here
 SECRET_KEY=your-secret-key-for-jwt
 EOF
@@ -234,7 +234,7 @@ git push origin feature/your-feature
 ### `backend/.env` (Local Only)
 
 ```
-DATABASE_URL=postgresql://user:password@localhost:5432/photography_db
+DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/photography_db
 GEMINI_API_KEY=your-api-key-here
 SECRET_KEY=your-secret-jwt-key
 ```

@@ -42,7 +42,7 @@ jobs:
       - name: Create .env for testing
         working-directory: ./backend
         run: |
-          echo "DATABASE_URL=postgresql://photography_user:photography_password@localhost:5432/photography_db" > .env
+          echo "DATABASE_URL=postgresql+psycopg://photography_user:photography_password@localhost:5432/photography_db" > .env
           echo "GEMINI_API_KEY=test-key-for-ci" >> .env
           echo "SECRET_KEY=test-secret-key-for-ci" >> .env
       
