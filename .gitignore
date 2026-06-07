@@ -42,3 +42,8 @@ dist/
 *.swp
 *.swo
 .DS_Store
+
+# Deprioritised — will be re-added later
+frontend/
+backend/static/
+backend/experiments/sample_images/

@@ -1,11 +1,11 @@
 from __future__ import annotations
-from typing import Optional, List
+from typing import Optional, List, Any
 from datetime import datetime
 from sqlmodel import SQLModel, Field, String, Relationship
-from sqlalchemy import Column
+from sqlalchemy import Column, JSON
 from sqlalchemy.dialects.postgresql import ARRAY
 
-# User model for authentication and ownership (define first for forward references)
+
 class User(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     username: str = Field(sa_column=Column(String, unique=True))
@@ -14,38 +14,48 @@ class User(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
-# Base class with shared fields
+class UserPreference(SQLModel, table=True):
+    """Stores per-user preferences that persist across sessions.
+
+    key examples: "theme_weights", "preferred_group_size", "style_emphasis"
+    value: arbitrary JSON (dict or list)
+    """
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    key: str = Field(sa_column=Column(String, index=True))
+    value: Any = Field(default=None, sa_column=Column(JSON))
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class ImageBase(SQLModel):
     filename: str
     file_path: str
     tags: List[str] = Field(default_factory=list)
     description: Optional[str] = None
 
-# Database Table Model
+
 class Image(ImageBase, table=True):
-    """
-    Represents an Image in our database.
-    """
-    id: int | None = Field(default=None, primary_key=True)
-    # We need to redefine tags here to apply the sa_column for PostgreSQL ARRAY
+    id: Optional[int] = Field(default=None, primary_key=True)
     tags: List[str] = Field(default_factory=list, sa_column=Column(ARRAY(String)))
+    # 768-dim float vector from text-embedding-004 (or None until generated)
+    embedding: Optional[Any] = Field(default=None, sa_column=Column(JSON))
     created_at: datetime = Field(default_factory=datetime.utcnow)
-    # Ownership
     user_id: Optional[int] = Field(default=None, foreign_key="user.id")
 
-# Schema for Creating an Image (Client -> Server)
+
 class ImageCreate(ImageBase):
     pass
 
-# Schema for Updating an Image (Client -> Server)
-class ImageUpdate(SQLModel):
-    filename: str | None = None
-    file_path: str | None = None
-    tags: List[str] | None = None
-    description: str | None = None
 
-# Schema for Reading an Image (Server -> Client)
+class ImageUpdate(SQLModel):
+    filename: Optional[str] = None
+    file_path: Optional[str] = None
+    tags: Optional[List[str]] = None
+    description: Optional[str] = None
+
+
 class ImagePublic(ImageBase):
     id: int
     created_at: datetime
-    user_id: int | None = None
+    user_id: Optional[int] = None
+    embedding: Optional[List[float]] = None

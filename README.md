@@ -37,6 +37,11 @@ cat > backend/.env << 'EOF'
 DATABASE_URL=postgresql+psycopg://photography_user:photography_password@localhost:5432/photography_db
 GEMINI_API_KEY=your-actual-gemini-api-key-here
 SECRET_KEY=your-secret-key-for-jwt
+
+# LangSmith experiment tracking (optional — tracing is disabled if not set)
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=your-langsmith-api-key-here
+LANGSMITH_PROJECT=photography-ml
 EOF
 ```
 
@@ -237,9 +242,53 @@ git push origin feature/your-feature
 DATABASE_URL=postgresql+psycopg://user:password@localhost:5432/photography_db
 GEMINI_API_KEY=your-api-key-here
 SECRET_KEY=your-secret-jwt-key
+
+# LangSmith (optional)
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=your-langsmith-key
+LANGSMITH_PROJECT=photography-ml
 ```
 
 **Important**: Never commit `.env`—it's in `.gitignore`
+
+---
+
+## 🧪 Experiments (Prompt & Model Comparison)
+
+Run controlled experiments to compare prompt variants and Gemini models. All runs are traced in LangSmith.
+
+### Prompt variants
+
+| Version | Strategy |
+|---------|----------|
+| `v1` | Generic photography keywords (baseline) |
+| `v2` | Structured by subject/lighting/mood/palette |
+| `v3` | Exactly 8 tags covering predefined categories |
+
+### Run experiments
+
+```bash
+cd backend
+
+# Compare prompts v1/v2/v3 on one image
+python -m experiments.run_experiment --mode prompts --image path/to/photo.jpg
+
+# Compare gemini-2.5-flash vs gemini-1.5-flash vs gemini-1.5-flash-8b
+python -m experiments.run_experiment --mode models --image path/to/photo.jpg
+
+# Run everything and save results
+python -m experiments.run_experiment --mode all --image path/to/photo.jpg --output results.json
+```
+
+### Experiments you can run
+
+1. **Prompt comparison** — does structured prompting (`v3`) produce better tags than generic (`v1`)?
+2. **Model comparison** — quality vs cost tradeoff across Gemini model tiers
+3. **Prompt × model grid** — which combination gives best quality?
+4. **Tag count analysis** — do different prompts produce consistently more/fewer tags?
+5. **Edge cases** — low-light photos, abstract art, portraits — do prompts generalize?
+
+Each run appears in your LangSmith dashboard at [smith.langchain.com](https://smith.langchain.com) with: inputs, output tags, latency, token counts, and model used.
 
 ---
 

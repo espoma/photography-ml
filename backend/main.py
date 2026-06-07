@@ -1,13 +1,14 @@
 from contextlib import asynccontextmanager
-from typing import Annotated, List
+from typing import Annotated, List, Optional
 from fastapi import FastAPI, Depends, HTTPException, Query, File, UploadFile, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlmodel import Session, select
 from app.database import create_db_and_tables, get_session
 from app.models import Image, ImageCreate, ImagePublic, ImageUpdate
-from app.services.ml_service import generate_tags
+from app.services.ml_service import generate_tags, generate_embedding
 from app.routes import auth as auth_routes
+from app.routes import preferences as pref_routes
 from app.security import get_current_user
 from app.models import User
 from slowapi import Limiter
@@ -18,70 +19,98 @@ from fastapi.responses import JSONResponse
 from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 import shutil
 import uuid
+import numpy as np
 from pathlib import Path
 
-# 1. The Lifespan Context Manager
-# This is the modern way to run code when the app starts or stops.
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Create tables if they don't exist
-    print("🚀 Starting up... Creating database tables...")
+    print("Starting up... Creating database tables...")
     create_db_and_tables()
-    
-    # Ensure static directory exists
-    static_dir = Path("static/images")
-    static_dir.mkdir(parents=True, exist_ok=True)
-    
+    Path("static/images").mkdir(parents=True, exist_ok=True)
     yield
-    # Shutdown: (We don't need to do anything here yet)
-    print("🛑 Shutting down...")
+    print("Shutting down...")
 
-# 2. Initialize the App
+
 app = FastAPI(
-    title="Photography LLM Ops",
+    title="Photography ML",
     description="API for Smart Photography Portfolio",
-    version="0.1.0",
-    lifespan=lifespan
+    version="0.2.0",
+    lifespan=lifespan,
 )
 
-# Rate limiter (per-IP). Configure limiter and middleware.
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
+
+
 async def _rate_limit_exceeded_handler(request, exc):
     return JSONResponse(
         status_code=HTTP_429_TOO_MANY_REQUESTS,
         content={"detail": "Rate limit exceeded. Try again later."},
     )
 
+
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# Include auth router
 app.include_router(auth_routes.router)
+app.include_router(pref_routes.router)
 
-# Configure CORS to allow frontend to access the API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  # Next.js frontend
-        "http://127.0.0.1:3000",  # Alternative localhost
-    ],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods (GET, POST, DELETE, etc.)
-    allow_headers=["*"],  # Allow all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# Mount the static directory to serve images
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# 3. Define Routes
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _save_upload(file: UploadFile) -> tuple[str, str]:
+    """Save uploaded file; return (unique_filename, file_path_str)."""
+    ext = Path(file.filename).suffix
+    name = f"{uuid.uuid4()}{ext}"
+    path = Path("static/images") / name
+    with open(path, "wb") as buf:
+        shutil.copyfileobj(file.file, buf)
+    return name, str(path)
+
+
+def _build_image(
+    filename: str,
+    file_path_str: str,
+    description: Optional[str],
+    extra_tags: List[str],
+    user_id: Optional[int],
+) -> Image:
+    ai_tags = generate_tags(file_path_str)
+    combined_tags = list(set(extra_tags + ai_tags))
+    embedding = generate_embedding(combined_tags, description)
+    return Image(
+        filename=filename,
+        file_path=f"/static/images/{filename}",
+        description=description,
+        tags=combined_tags,
+        embedding=embedding,
+        user_id=user_id,
+    )
+
+
+def _cosine_similarity(a: List[float], b: List[float]) -> float:
+    va, vb = np.array(a), np.array(b)
+    denom = np.linalg.norm(va) * np.linalg.norm(vb)
+    return float(np.dot(va, vb) / denom) if denom else 0.0
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/")
 def read_root():
-    """
-    A simple health check endpoint.
-    """
-    return {"message": "Welcome to the Photography LLM Ops API!", "status": "active"}
+    return {"message": "Photography ML API", "status": "active"}
+
 
 @app.post("/images/", response_model=ImagePublic)
 @limiter.limit("10/hour")
@@ -89,101 +118,101 @@ async def create_image(
     request: Request,
     file: UploadFile = File(...),
     description: str = Form(None),
-    # Accepts multiple tags keys: tags=a&tags=b
-    tags: List[str] = Form([]), 
+    tags: List[str] = Form([]),
     session: Session = Depends(get_session),
-    current_user: User | None = Depends(get_current_user)
+    current_user: User | None = Depends(get_current_user),
 ):
-    """
-    Upload a new image and create a record in the database.
-    """
-    # 1. Generate a unique filename
-    file_extension = Path(file.filename).suffix
-    unique_filename = f"{uuid.uuid4()}{file_extension}"
-    file_location = Path("static/images") / unique_filename
-    
-    # 2. Save the file to disk
-    with open(file_location, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-        
-    # 3. Generate AI Tags
-    ai_tags = generate_tags(str(file_location))
-    combined_tags = list(set(tags + ai_tags)) # Unique tags
-        
-    # 4. Create the database record
-    # Note: We construct the Image object directly since we are handling file upload manually
-    db_image = Image(
-        filename=unique_filename,
-        file_path=f"/static/images/{unique_filename}",
-        description=description,
-        tags=combined_tags
-    )
-    # Associate with user if authenticated
-    if current_user:
-        db_image.user_id = current_user.id
-    
-    # Add to the session and commit
+    filename, path = _save_upload(file)
+    db_image = _build_image(filename, path, description, tags, getattr(current_user, "id", None))
     session.add(db_image)
     session.commit()
-    
-    # Refresh to get the generated ID and default values (like created_at)
     session.refresh(db_image)
-    
     return db_image
+
+
+@app.post("/images/batch", response_model=List[ImagePublic])
+@limiter.limit("5/hour")
+async def create_images_batch(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    description: str = Form(None),
+    session: Session = Depends(get_session),
+    current_user: User | None = Depends(get_current_user),
+):
+    """Upload multiple images at once. Tags and embeddings are generated per image."""
+    results = []
+    for file in files:
+        filename, path = _save_upload(file)
+        db_image = _build_image(
+            filename, path, description, [], getattr(current_user, "id", None)
+        )
+        session.add(db_image)
+        session.flush()   # get id without full commit
+        results.append(db_image)
+    session.commit()
+    for img in results:
+        session.refresh(img)
+    return results
+
+
+@app.get("/images/similar/{image_id}", response_model=List[ImagePublic])
+def get_similar_images(
+    image_id: int,
+    n: int = Query(default=5, ge=1, le=50),
+    session: Session = Depends(get_session),
+):
+    """Return the N most similar images to the given one, ranked by cosine similarity of embeddings."""
+    target = session.get(Image, image_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Image not found")
+    if not target.embedding:
+        raise HTTPException(status_code=422, detail="Target image has no embedding yet")
+
+    candidates = session.exec(select(Image).where(Image.id != image_id)).all()
+    scored = [
+        (img, _cosine_similarity(target.embedding, img.embedding))
+        for img in candidates
+        if img.embedding
+    ]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [img for img, _ in scored[:n]]
+
 
 @app.get("/images/", response_model=List[ImagePublic])
 def read_images(
     offset: int = 0,
     limit: int = Query(default=100, le=100),
-    session: Session = Depends(get_session)
+    session: Session = Depends(get_session),
 ):
-    """
-    Get a list of images with pagination.
-    """
-    images = session.exec(select(Image).offset(offset).limit(limit)).all()
-    return images
+    return session.exec(select(Image).offset(offset).limit(limit)).all()
+
 
 @app.get("/images/{image_id}", response_model=ImagePublic)
 def read_image(image_id: int, session: Session = Depends(get_session)):
-    """
-    Get a specific image by ID.
-    """
     image = session.get(Image, image_id)
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
     return image
 
+
 @app.patch("/images/{image_id}", response_model=ImagePublic)
 def update_image(image_id: int, image: ImageUpdate, session: Session = Depends(get_session)):
-    """
-    Update an image record. Only provided fields will be updated.
-    """
     db_image = session.get(Image, image_id)
     if not db_image:
         raise HTTPException(status_code=404, detail="Image not found")
-    
-    # Convert the update data to a dict, excluding unset values
-    update_data = image.model_dump(exclude_unset=True)
-    
-    # Update the database object with the new data
-    for key, value in update_data.items():
+    for key, value in image.model_dump(exclude_unset=True).items():
         setattr(db_image, key, value)
-    
     session.add(db_image)
     session.commit()
     session.refresh(db_image)
     return db_image
 
+
 @app.delete("/images/{image_id}")
 def delete_image(image_id: int, session: Session = Depends(get_session)):
-    """
-    Delete an image record.
-    """
     image = session.get(Image, image_id)
     if not image:
         raise HTTPException(status_code=404, detail="Image not found")
-    
     session.delete(image)
     session.commit()
-    
     return {"ok": True}

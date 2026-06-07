@@ -4,8 +4,8 @@ services:
     image: pgvector/pgvector:pg16 # PostgreSQL 16 with pgvector extension pre-installed
     container_name: photography_db
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
+      POSTGRES_USER: photography_user
+      POSTGRES_PASSWORD: photography_password
       POSTGRES_DB: photography_db
     ports:
       - "5432:5432"
