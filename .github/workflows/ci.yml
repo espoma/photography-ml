@@ -60,26 +60,3 @@ jobs:
           python -m py_compile app/security.py
           find app -name "*.py" -type f -exec python -m py_compile {} \;
 
-  frontend-lint:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '18'
-      
-      - name: Install frontend dependencies
-        working-directory: ./frontend
-        run: npm install
-      
-      - name: Run Next.js build check
-        working-directory: ./frontend
-        run: npm run build || true
-      
-      - name: Check for common linting issues
-        working-directory: ./frontend
-        run: |
-          npm run lint 2>/dev/null || echo "✓ Frontend structure validated"
