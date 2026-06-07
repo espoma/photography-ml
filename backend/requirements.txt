@@ -34,3 +34,6 @@ passlib[argon2]==1.7.4
 argon2-cffi==23.1.0
 langsmith>=0.1.0
 numpy>=1.26.0
+sentence-transformers>=2.7.0
+scikit-learn>=1.4.0
+Pillow>=10.0.0

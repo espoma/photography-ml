@@ -37,8 +37,8 @@ class ImageBase(SQLModel):
 class Image(ImageBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     tags: List[str] = Field(default_factory=list, sa_column=Column(ARRAY(String)))
-    # 768-dim float vector from text-embedding-004 (or None until generated)
     embedding: Optional[Any] = Field(default=None, sa_column=Column(JSON))
+    embedding_backend: Optional[str] = Field(default=None)  # "clip", "sentence", "gemini"
     created_at: datetime = Field(default_factory=datetime.utcnow)
     user_id: Optional[int] = Field(default=None, foreign_key="user.id")
 
@@ -59,3 +59,4 @@ class ImagePublic(ImageBase):
     created_at: datetime
     user_id: Optional[int] = None
     embedding: Optional[List[float]] = None
+    embedding_backend: Optional[str] = None

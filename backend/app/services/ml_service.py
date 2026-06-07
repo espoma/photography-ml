@@ -1,3 +1,13 @@
+"""
+ML service: tag generation + embedding generation.
+
+Embedding backends (pick one per deployment):
+  clip      — visual image embeddings via CLIP ViT-B/32 (local, 512-dim, best for photo similarity)
+  sentence  — semantic text embeddings via all-MiniLM-L6-v2 (local, 384-dim, fast)
+  gemini    — text embeddings via Gemini text-embedding-004 (API, 768-dim)
+
+Models are lazy-loaded on first call so startup stays fast.
+"""
 import json
 import mimetypes
 from typing import List, Optional
@@ -29,8 +39,30 @@ PROMPTS: dict[str, str] = {
 }
 
 FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
+GEMINI_EMBED_MODEL = "models/text-embedding-004"
 
-EMBEDDING_MODEL = "models/text-embedding-004"
+# ── Model singletons (lazy-loaded) ────────────────────────────────────────────
+
+_clip_model = None
+_sentence_model = None
+
+
+def _get_clip_model():
+    global _clip_model
+    if _clip_model is None:
+        from sentence_transformers import SentenceTransformer
+        print("Loading CLIP model (first call only)...")
+        _clip_model = SentenceTransformer("clip-ViT-B-32")
+    return _clip_model
+
+
+def _get_sentence_model():
+    global _sentence_model
+    if _sentence_model is None:
+        from sentence_transformers import SentenceTransformer
+        print("Loading SentenceTransformer model (first call only)...")
+        _sentence_model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _sentence_model
 
 
 # ── Tag generation ────────────────────────────────────────────────────────────
@@ -41,12 +73,11 @@ def generate_tags(
     prompt_version: str = "v1",
     model_name: str = "gemini-2.5-flash",
 ) -> List[str]:
-    """Generate descriptive tags for a photo using Gemini."""
+    """Generate descriptive tags for a photo using Gemini with multi-model fallback."""
     print(f"ML: tagging {image_path} | prompt={prompt_version} model={model_name}")
 
     prompt = PROMPTS.get(prompt_version, PROMPTS["v1"])
     models_to_try = [model_name] + [m for m in FALLBACK_MODELS if m != model_name]
-
     client = genai.Client()
 
     with open(image_path, "rb") as f:
@@ -94,29 +125,65 @@ def generate_tags(
     return ["ai_generated", "photography"]
 
 
-# ── Embedding generation ───────────────────────────────────────────────────────
+# ── Embedding generation ──────────────────────────────────────────────────────
 
-@traceable(name="generate_embedding", tags=["gemini", "embedding"])
-def generate_embedding(tags: List[str], description: Optional[str] = None) -> Optional[List[float]]:
+@traceable(name="generate_embedding", tags=["embedding"])
+def generate_embedding(
+    tags: List[str],
+    description: Optional[str] = None,
+    image_path: Optional[str] = None,
+    backend: str = "clip",
+) -> Optional[List[float]]:
     """
-    Generate a 768-dim semantic embedding from image tags + description.
+    Generate an embedding for an image.
 
-    Uses Gemini text-embedding-004. Returns None on failure so the upload
-    still succeeds — embedding can be backfilled later.
+    Backends:
+      clip      — visual embedding from raw pixels (best for photo similarity)
+      sentence  — semantic text embedding from tags + description (fastest)
+      gemini    — text embedding from Gemini API (best semantic quality, costs quota)
 
-    Future upgrade: replace with CLIP for visual embeddings.
+    Returns None on failure so upload still succeeds.
     """
+    try:
+        if backend == "clip":
+            return _embed_clip(image_path, tags, description)
+        elif backend == "sentence":
+            return _embed_sentence(tags, description)
+        elif backend == "gemini":
+            return _embed_gemini(tags, description)
+        else:
+            print(f"Unknown embedding backend '{backend}', falling back to sentence")
+            return _embed_sentence(tags, description)
+    except Exception as e:
+        print(f"Embedding failed (non-fatal): {e}")
+        return None
+
+
+def _embed_clip(image_path: Optional[str], tags: List[str], description: Optional[str]) -> Optional[List[float]]:
+    """512-dim visual embedding from image pixels."""
+    if not image_path:
+        # No image path — fall back to text via CLIP text encoder
+        text = description or ", ".join(tags)
+        return _get_clip_model().encode(text).tolist()
+
+    from PIL import Image as PILImage
+    img = PILImage.open(image_path).convert("RGB")
+    return _get_clip_model().encode(img).tolist()
+
+
+def _embed_sentence(tags: List[str], description: Optional[str]) -> List[float]:
+    """384-dim semantic text embedding."""
+    text = ", ".join(tags)
+    if description:
+        text = f"{description}. {text}"
+    return _get_sentence_model().encode(text).tolist()
+
+
+def _embed_gemini(tags: List[str], description: Optional[str]) -> Optional[List[float]]:
+    """768-dim text embedding via Gemini API."""
     text = ", ".join(tags)
     if description:
         text = f"{description}. Tags: {text}"
-
-    try:
-        client = genai.Client()
-        result = client.models.embed_content(
-            model=EMBEDDING_MODEL,
-            contents=text,
-        )
-        return list(result.embeddings[0].values)
-    except Exception as e:
-        print(f"Embedding generation failed (non-fatal): {e}")
-        return None
+    client = genai.Client()
+    result = client.models.embed_content(model=GEMINI_EMBED_MODEL, contents=text)
+    return list(result.embeddings[0].values)

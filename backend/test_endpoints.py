@@ -126,7 +126,7 @@ def test_me_unauthenticated(client):
 # ── Images ────────────────────────────────────────────────────────────────────
 
 
-@patch("main.generate_embedding", return_value=[0.1] * 768)
+@patch("main.generate_embedding", return_value=[0.1] * 512)
 @patch("main.generate_tags", return_value=["sky", "outdoor"])
 def test_upload_image(mock_tags, mock_emb, client):
     files, data = _fake_image()
@@ -194,16 +194,32 @@ def test_upload_associates_user_when_authenticated(mock_tags, mock_emb, client):
 
 # ── Similarity ────────────────────────────────────────────────────────────────
 
-@patch("main.generate_embedding", return_value=[0.1] * 768)
+@patch("main.generate_embedding", return_value=[0.1] * 512)
 @patch("main.generate_tags", return_value=["tag1"])
 def test_similar_images(mock_tags, mock_emb, client):
     files, _ = _fake_image()
-    id1 = client.post("/images/", files=files, data={"description": "a"}).json()["id"]
+    id1 = client.post("/images/", files=files, data={"description": "a", "embedding_backend": "clip"}).json()["id"]
     files, _ = _fake_image()
-    client.post("/images/", files=files, data={"description": "b"})
+    client.post("/images/", files=files, data={"description": "b", "embedding_backend": "clip"})
     r = client.get(f"/images/similar/{id1}?n=5")
     assert r.status_code == 200
     assert isinstance(r.json(), list)
+
+
+# ── Storylines ────────────────────────────────────────────────────────────────
+
+@patch("main.generate_embedding", return_value=[0.1] * 512)
+@patch("main.generate_tags", return_value=["street", "urban"])
+def test_storylines(mock_tags, mock_emb, client):
+    # Upload 4 images so KMeans has enough points for 2 clusters
+    for _ in range(4):
+        files, _ = _fake_image()
+        client.post("/images/", files=files, data={"embedding_backend": "clip"})
+    r = client.post("/images/storylines", json={"n_stories": 2, "embedding_backend": "clip"})
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body) == 2
+    assert all("theme" in s and "images" in s for s in body)
 
 
 def test_similar_images_no_embedding(client):

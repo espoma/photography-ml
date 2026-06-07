@@ -4,6 +4,33 @@ _Update this file at the end of every session. Most recent entry at the top._
 
 ---
 
+## 2026-06-07
+
+### Done this session
+- **3 embedding backends**: CLIP (`clip-ViT-B-32`, 512-dim, local visual), SentenceTransformers (`all-MiniLM-L6-v2`, 384-dim, local text), Gemini (`text-embedding-004`, 768-dim, API). Lazy-loaded on first call. Default = `clip`.
+- **`POST /images/storylines`**: KMeans clustering on stored embeddings. Auto-detects k via silhouette score (up to `max_stories=8`). Returns groups with top-5 theme tags per cluster. Accepts `image_ids`, `n_stories`, `embedding_backend`.
+- **`embedding_backend` field** added to Image model (tracks which backend was used per image; similarity/storylines filter by this).
+- **New deps**: `sentence-transformers`, `scikit-learn`, `Pillow`.
+- **README CLI section**: complete curl commands for all endpoints (auth, upload, batch, similar, storylines, preferences, experiments).
+- **Tests**: 20/20 passing. Added storylines test.
+- CI green on dev.
+
+### Still needs to be done (immediate)
+- [ ] Add `LANGCHAIN_API_KEY` + LangSmith vars to `.env` (if not done)
+- [ ] Reset DB (`docker compose down -v && docker compose up -d db`) each time models.py changes — no migration system yet
+- [ ] Open PR dev → master
+- [ ] Real-world test: upload ~10 photos, run storylines
+
+### Backlog
+- [ ] Alembic migrations (instead of manual DB resets)
+- [ ] Rate limiter: switch from IP-based to user-based
+- [ ] Input validation: file size limit, magic bytes, format whitelist
+- [ ] Async tag generation (background task for batch uploads)
+- [ ] CLIP model warm-up on startup (avoid cold-start latency on first upload)
+- [ ] Story line naming via Gemini (currently uses top-5 tags)
+
+---
+
 ## 2026-06-06
 
 ### Done this session

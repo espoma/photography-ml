@@ -192,6 +192,157 @@ This ensures the app continues working even during API outages.
 
 ---
 
+## 🖥️ CLI Reference
+
+All commands assume you are in the project root and the backend is running on `http://127.0.0.1:8000`.
+
+### Start / Stop
+
+```bash
+# Start database
+docker compose up -d db
+
+# Start backend (Terminal 2)
+cd backend
+./env-photography-ml/bin/python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
+
+# Stop everything
+docker compose down        # add -v to wipe the database
+```
+
+### Auth
+
+```bash
+# Sign up — saves token to $TOKEN
+TOKEN=$(curl -s -X POST http://127.0.0.1:8000/auth/signup \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"pass1234"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# Login (if already signed up)
+TOKEN=$(curl -s -X POST http://127.0.0.1:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"alice","password":"pass1234"}' \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# Check current user
+curl -s http://127.0.0.1:8000/auth/me \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+```
+
+### Upload Images
+
+```bash
+# Single upload (CLIP embedding by default)
+curl -s -X POST http://127.0.0.1:8000/images/ \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@/path/to/photo.jpg" \
+  -F "description=street scene" \
+  -F "embedding_backend=clip" | python3 -m json.tool
+
+# Batch upload — multiple files in one request
+curl -s -X POST http://127.0.0.1:8000/images/batch \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "files=@photo1.jpg" \
+  -F "files=@photo2.jpg" \
+  -F "files=@photo3.jpg" \
+  -F "embedding_backend=clip" | python3 -m json.tool
+
+# Batch upload — all JPGs in a folder (shell loop)
+for f in /path/to/folder/*.jpg; do
+  curl -s -X POST http://127.0.0.1:8000/images/ \
+    -H "Authorization: Bearer $TOKEN" \
+    -F "file=@$f" \
+    -F "embedding_backend=clip"
+  echo " ← $f"
+done
+```
+
+### Gallery & Similarity
+
+```bash
+# List all images
+curl -s http://127.0.0.1:8000/images/ | python3 -m json.tool
+
+# Get image by ID
+curl -s http://127.0.0.1:8000/images/1 | python3 -m json.tool
+
+# Find 10 most similar images to image #1
+curl -s "http://127.0.0.1:8000/images/similar/1?n=10" | python3 -m json.tool
+
+# Update description/tags
+curl -s -X PATCH http://127.0.0.1:8000/images/1 \
+  -H "Content-Type: application/json" \
+  -d '{"description":"golden hour landscape"}' | python3 -m json.tool
+
+# Delete image
+curl -s -X DELETE http://127.0.0.1:8000/images/1 | python3 -m json.tool
+```
+
+### Story Lines
+
+```bash
+# Auto-detect groups (up to 8) from all your images
+curl -s -X POST http://127.0.0.1:8000/images/storylines \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"embedding_backend":"clip"}' | python3 -m json.tool
+
+# Force exactly 5 groups
+curl -s -X POST http://127.0.0.1:8000/images/storylines \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"n_stories":5,"embedding_backend":"clip"}' | python3 -m json.tool
+
+# Cluster a specific subset of images
+curl -s -X POST http://127.0.0.1:8000/images/storylines \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"image_ids":[1,2,3,4,5,6,7,8],"embedding_backend":"clip"}' | python3 -m json.tool
+```
+
+### User Preferences
+
+```bash
+# Save a preference (any JSON value)
+curl -s -X PUT http://127.0.0.1:8000/users/me/preferences/ \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"key":"style","value":"street photography"}' | python3 -m json.tool
+
+curl -s -X PUT http://127.0.0.1:8000/users/me/preferences/ \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"key":"theme_weights","value":{"portraits":0.8,"landscape":0.5}}' | python3 -m json.tool
+
+# Read all preferences
+curl -s http://127.0.0.1:8000/users/me/preferences/ \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+
+# Delete a preference
+curl -s -X DELETE http://127.0.0.1:8000/users/me/preferences/style \
+  -H "Authorization: Bearer $TOKEN" | python3 -m json.tool
+```
+
+### Experiments (Prompt / Model / Embedding Comparison)
+
+```bash
+cd backend
+
+# Compare prompt variants v1 / v2 / v3
+python -m experiments.run_experiment --mode prompts --image path/to/photo.jpg
+
+# Compare Gemini model tiers
+python -m experiments.run_experiment --mode models --image path/to/photo.jpg
+
+# Full grid + save results
+python -m experiments.run_experiment --mode all --image path/to/photo.jpg --output results.json
+```
+
+Traces appear in LangSmith at [smith.langchain.com](https://smith.langchain.com) under project `photography-ml`.
+
+---
+
 ## 🧪 Testing
 
 ### Run Backend Tests
@@ -199,17 +350,12 @@ This ensures the app continues working even during API outages.
 ```bash
 cd backend
 ./env-photography-ml/bin/python -m pytest test_endpoints.py -v
-./env-photography-ml/bin/pytest test_ml_service.py -v
 ```
 
-### Run CI Tests Locally
+### CI
 
-Tests automatically run on:
-- Push to `dev` branch
-- Pull requests to `dev`
-- Feature branch pushes
-
-View results at: https://github.com/espoma/photography-ml/actions
+Tests run automatically on push to `dev` and PRs to `dev`.
+View results: https://github.com/espoma/photography-ml/actions
 
 ---
 
