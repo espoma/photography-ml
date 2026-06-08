@@ -47,3 +47,6 @@ dist/
 frontend/
 backend/static/
 backend/experiments/sample_images/
+
+# Local docs (diagrams, notes)
+docs/
