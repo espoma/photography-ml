@@ -4,6 +4,18 @@ _Update this file at the end of every session. Most recent entry at the top._
 
 ---
 
+## 2026-06-08 (today — in progress)
+
+### Done this session
+- _to be filled at end of session_
+
+### Still needs to be done (immediate)
+- [ ] Open PR dev → master (ready, CI green, 10 commits ahead)
+- [ ] Real-world test: upload a folder of photos, run storylines
+- [ ] Reset DB if not done yet (`docker compose down -v && docker compose up -d db`)
+
+---
+
 ## 2026-06-07
 
 ### Done this session
