@@ -20,6 +20,7 @@ from langsmith.run_helpers import get_current_run_tree
 # ── Prompt library ────────────────────────────────────────────────────────────
 
 PROMPTS: dict[str, str] = {
+    # ── Tagging prompts ───────────────────────────────────────────────────────
     "v1": (
         "You are an expert photography assistant. Analyze this image and generate 5-10 highly "
         "descriptive keywords. Focus on lighting, mood, subject matter, and composition. "
@@ -36,9 +37,27 @@ PROMPTS: dict[str, str] = {
         "composition style, color temperature, photographic technique, and post-processing "
         "style. Be specific and lowercase."
     ),
+
+    # ── Cluster description prompt ────────────────────────────────────────────
+    # Used in describe_cluster(). {user_context} and {n_images} are filled at call time.
+    "cluster_description": (
+        "You are a photography curator helping a photographer organise their portfolio.\n\n"
+        "You are looking at {n_images} images that were grouped together by visual and "
+        "thematic similarity. They are part of a larger curated selection the photographer "
+        "wants to publish.\n\n"
+        "{user_context}"
+        "Your task:\n"
+        "1. Write a short, evocative TITLE (3-5 words) that captures the narrative essence "
+        "of this group — think exhibition label or Instagram series name, not a tag.\n"
+        "2. Write 1-2 sentences describing what coherently ties these images together: "
+        "the visual story, shared mood, recurring motif, or emotional thread.\n\n"
+        "Be specific to what you actually see. Think like a curator, not a classifier.\n\n"
+        'Respond in JSON: {{"title": "...", "description": "..."}}'
+    ),
 }
 
 FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
+GEMINI_TAG_MODEL = "gemini-2.5-flash"
 GEMINI_EMBED_MODEL = "models/text-embedding-004"
 
 # ── Model singletons (lazy-loaded) ────────────────────────────────────────────
@@ -178,6 +197,80 @@ def _embed_sentence(tags: List[str], description: Optional[str]) -> List[float]:
         text = f"{description}. {text}"
     return _get_sentence_model().encode(text).tolist()
 
+
+# ── Cluster description ───────────────────────────────────────────────────────
+
+@traceable(name="describe_cluster", tags=["gemini", "storylines"])
+def describe_cluster(
+    image_paths: List[str],
+    user_preferences: Optional[dict] = None,
+    user_prompt: Optional[str] = None,
+    n_images: int = 4,
+) -> dict:
+    """
+    Send representative images from a cluster to Gemini and get a coherent
+    narrative title + description.
+
+    Args:
+        image_paths: paths to representative images (sorted centroid-first)
+        user_preferences: dict from UserPreference table (injected as context)
+        user_prompt: optional free-text intent from the request ("for Instagram", etc.)
+        n_images: max images to send (keeps API cost low)
+
+    Returns:
+        {"title": str, "description": str}
+    """
+    sampled = image_paths[:n_images]
+
+    # Build user context block
+    context_lines = []
+    if user_prompt:
+        context_lines.append(f"The photographer's intent: {user_prompt}")
+    if user_preferences:
+        readable = "; ".join(f"{k}: {v}" for k, v in user_preferences.items())
+        context_lines.append(f"Their known preferences: {readable}")
+    user_context = ("\n".join(context_lines) + "\n\n") if context_lines else ""
+
+    prompt_text = PROMPTS["cluster_description"].format(
+        n_images=len(sampled),
+        user_context=user_context,
+    )
+
+    try:
+        client = genai.Client()
+        contents = []
+        for path in sampled:
+            with open(path, "rb") as f:
+                image_bytes = f.read()
+            mime_type, _ = mimetypes.guess_type(path)
+            contents.append(
+                types.Part.from_bytes(data=image_bytes, mime_type=mime_type or "image/jpeg")
+            )
+        contents.append(prompt_text)
+
+        response = client.models.generate_content(
+            model=GEMINI_TAG_MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "description": {"type": "string"},
+                    },
+                    "required": ["title", "description"],
+                },
+            ),
+        )
+        return json.loads(response.text)
+
+    except Exception as e:
+        print(f"describe_cluster failed (non-fatal): {e}")
+        return {"title": "Untitled group", "description": ""}
+
+
+# ── Internal embedding helpers ────────────────────────────────────────────────
 
 def _embed_gemini(tags: List[str], description: Optional[str]) -> Optional[List[float]]:
     """768-dim text embedding via Gemini API."""

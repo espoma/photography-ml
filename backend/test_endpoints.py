@@ -208,18 +208,29 @@ def test_similar_images(mock_tags, mock_emb, client):
 
 # ── Storylines ────────────────────────────────────────────────────────────────
 
+@patch("main.describe_cluster", return_value={"title": "Test Theme", "description": "A test group."})
 @patch("main.generate_embedding", return_value=[0.1] * 512)
 @patch("main.generate_tags", return_value=["street", "urban"])
-def test_storylines(mock_tags, mock_emb, client):
-    # Upload 4 images so KMeans has enough points for 2 clusters
-    for _ in range(4):
+def test_storylines(mock_tags, mock_emb, mock_desc, client):
+    token = _signup(client)["access_token"]
+    h = _auth_header(token)
+    # Upload 6 images so KMeans has enough distinct points
+    for i in range(6):
         files, _ = _fake_image()
-        client.post("/images/", files=files, data={"embedding_backend": "clip"})
-    r = client.post("/images/storylines", json={"n_stories": 2, "embedding_backend": "clip"})
+        # vary embeddings slightly so clusters differ
+        mock_emb.return_value = [0.1 * (i + 1)] * 512
+        client.post("/images/", files=files, data={"embedding_backend": "clip"}, headers=h)
+    r = client.post(
+        "/images/storylines",
+        json={"n_options": 2, "min_themes": 2, "max_themes": 3, "embedding_backend": "clip"},
+        headers=h,
+    )
     assert r.status_code == 200
-    body = r.json()
-    assert len(body) == 2
-    assert all("theme" in s and "images" in s for s in body)
+    options = r.json()
+    assert len(options) == 2
+    for opt in options:
+        assert "themes" in opt
+        assert all("title" in t and "description" in t and "images" in t for t in opt["themes"])
 
 
 def test_similar_images_no_embedding(client):

@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 from app.database import create_db_and_tables, get_session
 from app.models import Image, ImagePublic, ImageUpdate
-from app.services.ml_service import generate_tags, generate_embedding
+from app.services.ml_service import generate_tags, generate_embedding, describe_cluster
 from app.routes import auth as auth_routes
 from app.routes import preferences as pref_routes
 from app.security import get_current_user
@@ -76,18 +76,27 @@ class ImageSummary(BaseModel):
     description: Optional[str]
 
 
-class Storyline(BaseModel):
-    story_id: int
-    theme: str           # top tags that characterise this group
+class Theme(BaseModel):
+    theme_id: int
+    title: str           # Gemini-generated narrative title
+    description: str     # Gemini-generated 1-2 sentence coherent description
     image_count: int
     images: List[ImageSummary]
 
 
+class StorylinesOption(BaseModel):
+    option_id: int
+    n_themes: int
+    themes: List[Theme]
+
+
 class StorylinesRequest(BaseModel):
-    image_ids: Optional[List[int]] = None   # None = all images for the user
-    n_stories: Optional[int] = None         # None = auto-detect optimal k
-    max_stories: int = 8
-    embedding_backend: str = "clip"         # must match the backend used when uploading
+    image_ids: Optional[List[int]] = None  # None = all images for the authenticated user
+    n_options: int = 3                     # how many different splitting proposals to return
+    min_themes: int = 3                    # fewest clusters in any option
+    max_themes: int = 6                    # most clusters in any option
+    embedding_backend: str = "clip"
+    user_prompt: Optional[str] = None      # free-text intent, e.g. "for an Instagram carousel"
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
@@ -134,18 +143,28 @@ def _cosine_similarity(a: List[float], b: List[float]) -> float:
     return float(np.dot(va, vb) / denom) if denom else 0.0
 
 
-def _auto_k(embeddings: np.ndarray, max_k: int) -> int:
-    """Pick optimal number of clusters via silhouette score."""
-    from sklearn.metrics import silhouette_score
-    from sklearn.cluster import KMeans
+def _k_values(n_options: int, min_k: int, max_k: int) -> List[int]:
+    """Return n_options evenly-spaced unique K values between min_k and max_k."""
+    if min_k == max_k or n_options == 1:
+        return [min_k]
+    import numpy as np_
+    raw = np_.linspace(min_k, max_k, n_options)
+    seen, result = set(), []
+    for v in map(int, np_.round(raw)):
+        if v not in seen:
+            seen.add(v)
+            result.append(v)
+    return result
 
-    best_k, best_score = 2, -1.0
-    for k in range(2, min(max_k + 1, len(embeddings))):
-        labels = KMeans(n_clusters=k, random_state=42, n_init=10).fit_predict(embeddings)
-        score = silhouette_score(embeddings, labels)
-        if score > best_score:
-            best_score, best_k = score, k
-    return best_k
+
+def _representative_paths(images, embeddings: np.ndarray, labels, cluster_id: int, n: int = 4) -> List[str]:
+    """Return paths of up to n images closest to the cluster centroid."""
+    idx = [i for i, l in enumerate(labels) if l == cluster_id]
+    vecs = embeddings[idx]
+    centroid = vecs.mean(axis=0)
+    distances = np.linalg.norm(vecs - centroid, axis=1)
+    closest = np.argsort(distances)[:n]
+    return [str(Path("static/images") / images[idx[i]].filename) for i in closest]
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -201,23 +220,23 @@ async def create_images_batch(
     return results
 
 
-@app.post("/images/storylines", response_model=List[Storyline])
+@app.post("/images/storylines", response_model=List[StorylinesOption])
 def create_storylines(
     body: StorylinesRequest,
     session: Session = Depends(get_session),
     current_user: User | None = Depends(get_current_user),
 ):
     """
-    Group images into thematic story lines using KMeans clustering on embeddings.
+    Return n_options different ways to split images into thematic groups.
 
-    - image_ids: which images to cluster (default: all images for the current user)
-    - n_stories: how many groups (default: auto-detected via silhouette score)
-    - max_stories: upper bound for auto-detection (default 8)
-    - embedding_backend: only images embedded with this backend are used
+    Each option uses a different number of clusters (K). For every cluster,
+    Gemini receives the most representative images and writes a narrative
+    title + description informed by the user's stored preferences.
     """
     from sklearn.cluster import KMeans
+    from app.models import UserPreference
 
-    # Fetch candidate images
+    # ── 1. Fetch images ───────────────────────────────────────────────────────
     query = select(Image)
     if body.image_ids:
         query = query.where(Image.id.in_(body.image_ids))
@@ -225,51 +244,68 @@ def create_storylines(
         query = query.where(Image.user_id == current_user.id)
 
     images = session.exec(query).all()
-
-    # Keep only those with embeddings from the requested backend
-    images = [
-        img for img in images
-        if img.embedding and img.embedding_backend == body.embedding_backend
-    ]
+    images = [img for img in images if img.embedding and img.embedding_backend == body.embedding_backend]
 
     if len(images) < 2:
         raise HTTPException(
             status_code=422,
             detail=f"Need at least 2 images with '{body.embedding_backend}' embeddings. "
-                   f"Found {len(images)}. Upload images with embedding_backend={body.embedding_backend}.",
+                   f"Found {len(images)}.",
         )
 
     embeddings = np.array([img.embedding for img in images])
 
-    k = body.n_stories or _auto_k(embeddings, body.max_stories)
-    k = min(k, len(images))
+    # ── 2. Load user preferences ──────────────────────────────────────────────
+    user_prefs: dict = {}
+    if current_user:
+        prefs = session.exec(
+            select(UserPreference).where(UserPreference.user_id == current_user.id)
+        ).all()
+        user_prefs = {p.key: p.value for p in prefs}
 
-    labels = KMeans(n_clusters=k, random_state=42, n_init=10).fit_predict(embeddings)
+    # ── 3. Build K values for each option ─────────────────────────────────────
+    min_k = min(body.min_themes, len(images))
+    max_k = min(body.max_themes, len(images))
+    ks = _k_values(body.n_options, min_k, max_k)
 
-    storylines = []
-    for story_id in range(k):
-        group = [img for img, lbl in zip(images, labels) if lbl == story_id]
-        all_tags = [tag for img in group for tag in img.tags]
-        top_tags = ", ".join(t for t, _ in Counter(all_tags).most_common(5))
-        storylines.append(Storyline(
-            story_id=story_id,
-            theme=top_tags,
-            image_count=len(group),
-            images=[
-                ImageSummary(
-                    id=img.id,
-                    filename=img.filename,
-                    file_path=img.file_path,
-                    tags=img.tags,
-                    description=img.description,
-                )
-                for img in group
-            ],
-        ))
+    # ── 4. Cluster + describe for each K ─────────────────────────────────────
+    options: List[StorylinesOption] = []
 
-    # Sort by group size descending so the dominant theme is first
-    storylines.sort(key=lambda s: s.image_count, reverse=True)
-    return storylines
+    for option_id, k in enumerate(ks):
+        labels = KMeans(n_clusters=k, random_state=42, n_init=10).fit_predict(embeddings)
+
+        themes: List[Theme] = []
+        for cluster_id in range(k):
+            group = [img for img, lbl in zip(images, labels) if lbl == cluster_id]
+            rep_paths = _representative_paths(images, embeddings, labels, cluster_id, n=4)
+
+            narrative = describe_cluster(
+                image_paths=rep_paths,
+                user_preferences=user_prefs or None,
+                user_prompt=body.user_prompt,
+            )
+
+            themes.append(Theme(
+                theme_id=cluster_id,
+                title=narrative["title"],
+                description=narrative["description"],
+                image_count=len(group),
+                images=[
+                    ImageSummary(
+                        id=img.id,
+                        filename=img.filename,
+                        file_path=img.file_path,
+                        tags=img.tags,
+                        description=img.description,
+                    )
+                    for img in group
+                ],
+            ))
+
+        themes.sort(key=lambda t: t.image_count, reverse=True)
+        options.append(StorylinesOption(option_id=option_id, n_themes=k, themes=themes))
+
+    return options
 
 
 @app.get("/images/similar/{image_id}", response_model=List[ImagePublic])
