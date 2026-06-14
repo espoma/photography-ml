@@ -4,15 +4,26 @@ _Update this file at the end of every session. Most recent entry at the top._
 
 ---
 
-## 2026-06-08 (today — in progress)
+## 2026-06-14
 
 ### Done this session
-- _to be filled at end of session_
+- **Bug fix — user_id=null**: storylines endpoint now includes anonymous uploads via `(user_id == current_user.id) | (user_id == None)` so photos uploaded without auth token still appear in clustering.
+- **Bug fix — Gemini rate limit**: added `time.sleep(1.5)` between `describe_cluster` calls to avoid per-minute quota errors ("Untitled group" results).
+- **Bug fix — relative path**: `_representative_paths` now uses `STATIC_DIR = Path(__file__).parent / "static" / "images"` (absolute) instead of `Path("static/images")` which broke when CWD wasn't `backend/`.
+- **Ollama local backend**: set `TAGGING_BACKEND=ollama` in `.env` to keep all photos on-device. Uses Ollama `/api/generate` with base64-encoded images. Controlled via `OLLAMA_BASE_URL` (default: `http://localhost:11434`) and `OLLAMA_VISION_MODEL` (default: `llava`). Both `generate_tags` and `describe_cluster` respect this env var.
+- **`organize_storylines.py`**: script that reads a storylines JSON and copies photos into a browsable folder tree (`option_1__3_themes/theme_1__the_adorned_gaze/01_photo.jpg`). Supports `--link` for symlinks. Tested against Krithika portraits output.
+- 20/20 tests passing. PR opened to master.
 
 ### Still needs to be done (immediate)
-- [ ] Open PR dev → master (ready, CI green, 10 commits ahead)
-- [ ] Real-world test: upload a folder of photos, run storylines
-- [ ] Reset DB if not done yet (`docker compose down -v && docker compose up -d db`)
+- [ ] `ollama pull llava` to use the local backend (or `llava-phi3` for faster)
+- [ ] Re-run storylines on Krithika portraits with fixed rate limit — option 3 still has "Untitled group" clusters from the old run
+
+### Backlog
+- [ ] Alembic migrations (instead of manual DB resets)
+- [ ] Rate limiter: switch from IP-based to user-based
+- [ ] Input validation: file size limit, magic bytes, format whitelist
+- [ ] Async tag generation (background task for batch uploads)
+- [ ] CLIP model warm-up on startup
 
 ---
 

@@ -21,8 +21,12 @@ from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 from collections import Counter
 import shutil
 import uuid
+import time
 import numpy as np
 from pathlib import Path
+
+# Absolute path to uploaded images — robust regardless of CWD
+STATIC_DIR = Path(__file__).parent / "static" / "images"
 
 
 # ── App setup ─────────────────────────────────────────────────────────────────
@@ -158,13 +162,13 @@ def _k_values(n_options: int, min_k: int, max_k: int) -> List[int]:
 
 
 def _representative_paths(images, embeddings: np.ndarray, labels, cluster_id: int, n: int = 4) -> List[str]:
-    """Return paths of up to n images closest to the cluster centroid."""
+    """Return absolute paths of up to n images closest to the cluster centroid."""
     idx = [i for i, l in enumerate(labels) if l == cluster_id]
     vecs = embeddings[idx]
     centroid = vecs.mean(axis=0)
     distances = np.linalg.norm(vecs - centroid, axis=1)
     closest = np.argsort(distances)[:n]
-    return [str(Path("static/images") / images[idx[i]].filename) for i in closest]
+    return [str(STATIC_DIR / images[idx[i]].filename) for i in closest]
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -239,9 +243,13 @@ def create_storylines(
     # ── 1. Fetch images ───────────────────────────────────────────────────────
     query = select(Image)
     if body.image_ids:
+        # Explicit list — use as-is regardless of ownership
         query = query.where(Image.id.in_(body.image_ids))
     elif current_user:
-        query = query.where(Image.user_id == current_user.id)
+        # Return this user's images AND any anonymous (user_id=null) uploads
+        query = query.where(
+            (Image.user_id == current_user.id) | (Image.user_id == None)  # noqa: E711
+        )
 
     images = session.exec(query).all()
     images = [img for img in images if img.embedding and img.embedding_backend == body.embedding_backend]
@@ -278,6 +286,9 @@ def create_storylines(
         for cluster_id in range(k):
             group = [img for img, lbl in zip(images, labels) if lbl == cluster_id]
             rep_paths = _representative_paths(images, embeddings, labels, cluster_id, n=4)
+
+            if cluster_id > 0:
+                time.sleep(1.5)  # avoid Gemini per-minute rate limits
 
             narrative = describe_cluster(
                 image_paths=rep_paths,

@@ -6,16 +6,27 @@ Embedding backends (pick one per deployment):
   sentence  — semantic text embeddings via all-MiniLM-L6-v2 (local, 384-dim, fast)
   gemini    — text embeddings via Gemini text-embedding-004 (API, 768-dim)
 
-Models are lazy-loaded on first call so startup stays fast.
+Tagging/description backends (set TAGGING_BACKEND env var):
+  gemini    — Gemini 2.5-flash multimodal (default, sends images to Google)
+  ollama    — local vision model via Ollama (images stay on-device)
+
+Set OLLAMA_BASE_URL (default: http://localhost:11434) and OLLAMA_VISION_MODEL (default: llava).
 """
+import base64
 import json
 import mimetypes
+import os
 from typing import List, Optional
 
+import requests
 from google import genai
 from google.genai import types
 from langsmith import traceable
 from langsmith.run_helpers import get_current_run_tree
+
+TAGGING_BACKEND = os.getenv("TAGGING_BACKEND", "gemini")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "llava")
 
 # ── Prompt library ────────────────────────────────────────────────────────────
 
@@ -60,6 +71,69 @@ FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b"
 GEMINI_TAG_MODEL = "gemini-2.5-flash"
 GEMINI_EMBED_MODEL = "models/text-embedding-004"
 
+
+# ── Ollama helpers ────────────────────────────────────────────────────────────
+
+def _ollama_vision(image_paths: List[str], prompt: str, model: str = OLLAMA_VISION_MODEL) -> str:
+    """Call Ollama /api/generate with one or more images (base64-encoded). Returns raw text."""
+    images_b64 = []
+    for path in image_paths:
+        with open(path, "rb") as f:
+            images_b64.append(base64.b64encode(f.read()).decode())
+
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "images": images_b64,
+        "stream": False,
+    }
+    resp = requests.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload, timeout=120)
+    resp.raise_for_status()
+    return resp.json().get("response", "")
+
+
+def _tags_via_ollama(image_path: str, prompt_version: str = "v1") -> List[str]:
+    prompt = (
+        PROMPTS.get(prompt_version, PROMPTS["v1"])
+        + "\nReturn ONLY a JSON array of lowercase strings, e.g. [\"tag1\", \"tag2\"]."
+    )
+    raw = _ollama_vision([image_path], prompt)
+    start, end = raw.find("["), raw.rfind("]")
+    if start == -1 or end == -1:
+        return ["photography"]
+    return json.loads(raw[start : end + 1])
+
+
+def _describe_cluster_via_ollama(
+    image_paths: List[str],
+    user_preferences: Optional[dict],
+    user_prompt: Optional[str],
+    n_images: int = 4,
+) -> dict:
+    sampled = image_paths[:n_images]
+
+    context_lines = []
+    if user_prompt:
+        context_lines.append(f"The photographer's intent: {user_prompt}")
+    if user_preferences:
+        readable = "; ".join(f"{k}: {v}" for k, v in user_preferences.items())
+        context_lines.append(f"Their known preferences: {readable}")
+    user_context = ("\n".join(context_lines) + "\n\n") if context_lines else ""
+
+    prompt_text = (
+        PROMPTS["cluster_description"].format(n_images=len(sampled), user_context=user_context)
+        + "\nReturn ONLY the JSON object, no markdown."
+    )
+
+    raw = _ollama_vision(sampled, prompt_text)
+    start, end = raw.find("{"), raw.rfind("}")
+    if start == -1 or end == -1:
+        return {"title": "Untitled group", "description": ""}
+    try:
+        return json.loads(raw[start : end + 1])
+    except json.JSONDecodeError:
+        return {"title": "Untitled group", "description": ""}
+
 # ── Model singletons (lazy-loaded) ────────────────────────────────────────────
 
 _clip_model = None
@@ -86,15 +160,25 @@ def _get_sentence_model():
 
 # ── Tag generation ────────────────────────────────────────────────────────────
 
-@traceable(name="generate_tags", tags=["gemini", "photography"])
+@traceable(name="generate_tags", tags=["photography"])
 def generate_tags(
     image_path: str,
     prompt_version: str = "v1",
     model_name: str = "gemini-2.5-flash",
+    backend: Optional[str] = None,
 ) -> List[str]:
-    """Generate descriptive tags for a photo using Gemini with multi-model fallback."""
-    print(f"ML: tagging {image_path} | prompt={prompt_version} model={model_name}")
+    """Generate descriptive tags for a photo. Backend defaults to TAGGING_BACKEND env var."""
+    active_backend = backend or TAGGING_BACKEND
+    print(f"ML: tagging {image_path} | backend={active_backend} prompt={prompt_version}")
 
+    if active_backend == "ollama":
+        try:
+            return _tags_via_ollama(image_path, prompt_version)
+        except Exception as e:
+            print(f"Ollama tagging failed: {e}")
+            return ["ai_generated", "photography"]
+
+    # --- Gemini path ---
     prompt = PROMPTS.get(prompt_version, PROMPTS["v1"])
     models_to_try = [model_name] + [m for m in FALLBACK_MODELS if m != model_name]
     client = genai.Client()
@@ -200,12 +284,13 @@ def _embed_sentence(tags: List[str], description: Optional[str]) -> List[float]:
 
 # ── Cluster description ───────────────────────────────────────────────────────
 
-@traceable(name="describe_cluster", tags=["gemini", "storylines"])
+@traceable(name="describe_cluster", tags=["storylines"])
 def describe_cluster(
     image_paths: List[str],
     user_preferences: Optional[dict] = None,
     user_prompt: Optional[str] = None,
     n_images: int = 4,
+    backend: Optional[str] = None,
 ) -> dict:
     """
     Send representative images from a cluster to Gemini and get a coherent
@@ -220,6 +305,15 @@ def describe_cluster(
     Returns:
         {"title": str, "description": str}
     """
+    active_backend = backend or TAGGING_BACKEND
+
+    if active_backend == "ollama":
+        try:
+            return _describe_cluster_via_ollama(image_paths, user_preferences, user_prompt, n_images)
+        except Exception as e:
+            print(f"Ollama describe_cluster failed: {e}")
+            return {"title": "Untitled group", "description": ""}
+
     sampled = image_paths[:n_images]
 
     # Build user context block
