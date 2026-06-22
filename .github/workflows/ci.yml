@@ -1,57 +1,62 @@
-name: CI
+name: CI - Backend Tests & Lint
 
 on:
   push:
-    branches: [ dev, main ]
+    branches: [ dev, feature/* ]
   pull_request:
     branches: [ dev ]
 
 jobs:
   backend-tests:
-    name: Backend tests
     runs-on: ubuntu-latest
+    
     services:
-      db:
-        image: pgvector/pgvector:pg16
+      postgres:
+        image: postgres:15
         env:
-          POSTGRES_USER: user
-          POSTGRES_PASSWORD: password
+          POSTGRES_USER: photography_user
+          POSTGRES_PASSWORD: photography_password
           POSTGRES_DB: photography_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
         ports:
           - 5432:5432
-        options: >-
-          --health-cmd pg_isready -U user -d photography_db
-          --health-interval 10s --health-timeout 5s --health-retries 5
 
     steps:
       - uses: actions/checkout@v4
-
+      
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.14'
-
-      - name: Install backend dependencies
+      
+      - name: Install dependencies
+        working-directory: ./backend
         run: |
-          cd backend
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      - name: Wait for DB
-        run: sleep 10
-
-      - name: Start backend server
+      
+      - name: Create .env for testing
+        working-directory: ./backend
         run: |
-          cd backend
-          nohup python -m uvicorn main:app --host 0.0.0.0 --port 8000 > uvicorn.log 2>&1 &
-          sleep 3
-
-      - name: Run endpoint integration script
+          echo "DATABASE_URL=postgresql+psycopg://photography_user:photography_password@localhost:5432/photography_db" > .env
+          echo "GEMINI_API_KEY=test-key-for-ci" >> .env
+          echo "SECRET_KEY=test-secret-key-for-ci" >> .env
+      
+      - name: Run backend tests (pytest)
+        working-directory: ./backend
         run: |
-          cd backend
-          python test_endpoints.py
-
-      - name: Run unit tests
+          pytest test_endpoints.py -v
+      
+      - name: Check Python syntax
+        working-directory: ./backend
         run: |
-          cd backend
-          pytest -q
+          python -m py_compile main.py
+          python -m py_compile app/models.py
+          python -m py_compile app/database.py
+          python -m py_compile app/security.py
+          find app -name "*.py" -type f -exec python -m py_compile {} \;
+

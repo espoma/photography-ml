@@ -1,79 +1,376 @@
-from typing import List
+"""
+ML service: tag generation + embedding generation.
+
+Embedding backends (pick one per deployment):
+  clip      — visual image embeddings via CLIP ViT-B/32 (local, 512-dim, best for photo similarity)
+  sentence  — semantic text embeddings via all-MiniLM-L6-v2 (local, 384-dim, fast)
+  gemini    — text embeddings via Gemini text-embedding-004 (API, 768-dim)
+
+Tagging/description backends (set TAGGING_BACKEND env var):
+  gemini    — Gemini 2.5-flash multimodal (default, sends images to Google)
+  ollama    — local vision model via Ollama (images stay on-device)
+
+Set OLLAMA_BASE_URL (default: http://localhost:11434) and OLLAMA_VISION_MODEL (default: llava).
+"""
+import base64
 import json
 import mimetypes
+import os
+from typing import List, Optional
+
+import requests
 from google import genai
 from google.genai import types
+from langsmith import traceable
+from langsmith.run_helpers import get_current_run_tree
 
-# List of free-tier Gemini models to try in order (primary to fallback)
-GEMINI_MODELS = [
-    'gemini-2.5-flash',        # Primary: Latest and fastest
-    'gemini-1.5-flash',        # Fallback 1: Reliable alternative
-    'gemini-1.5-flash-8b',     # Fallback 2: Lightweight version
-]
+TAGGING_BACKEND = os.getenv("TAGGING_BACKEND", "gemini")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "llava")
 
-def generate_tags(image_path: str) -> List[str]:
-    """
-    ML service that uses Gemini to generate tags for an image.
-    Tries multiple free-tier models with fallback.
-    
-    Args:
-        image_path (str): The path to the image file on disk.
-        
-    Returns:
-        List[str]: A list of predicted tags.
-    """
-    print(f"🤖 ML Service: Analyzing image at {image_path} with Gemini...")
-    
+# ── Prompt library ────────────────────────────────────────────────────────────
+
+PROMPTS: dict[str, str] = {
+    # ── Tagging prompts ───────────────────────────────────────────────────────
+    "v1": (
+        "You are an expert photography assistant. Analyze this image and generate 5-10 highly "
+        "descriptive keywords. Focus on lighting, mood, subject matter, and composition. "
+        "Only use lowercase."
+    ),
+    "v2": (
+        "Analyze this photograph and return 5-10 descriptive tags covering: subject "
+        "(person/landscape/object), lighting quality (harsh/soft/natural), mood/emotion, "
+        "color palette, and photographic style. Lowercase only."
+    ),
+    "v3": (
+        "You are a photography metadata specialist. Generate exactly 8 tags for this image. "
+        "Include one tag each for: primary subject, secondary elements, lighting, mood, "
+        "composition style, color temperature, photographic technique, and post-processing "
+        "style. Be specific and lowercase."
+    ),
+
+    # ── Cluster description prompt ────────────────────────────────────────────
+    # Used in describe_cluster(). {user_context} and {n_images} are filled at call time.
+    "cluster_description": (
+        "You are a photography curator helping a photographer organise their portfolio.\n\n"
+        "You are looking at {n_images} images that were grouped together by visual and "
+        "thematic similarity. They are part of a larger curated selection the photographer "
+        "wants to publish.\n\n"
+        "{user_context}"
+        "Your task:\n"
+        "1. Write a short, evocative TITLE (3-5 words) that captures the narrative essence "
+        "of this group — think exhibition label or Instagram series name, not a tag.\n"
+        "2. Write 1-2 sentences describing what coherently ties these images together: "
+        "the visual story, shared mood, recurring motif, or emotional thread.\n\n"
+        "Be specific to what you actually see. Think like a curator, not a classifier.\n\n"
+        'Respond in JSON: {{"title": "...", "description": "..."}}'
+    ),
+}
+
+FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
+GEMINI_TAG_MODEL = "gemini-2.5-flash"
+GEMINI_EMBED_MODEL = "models/text-embedding-004"
+
+
+# ── Ollama helpers ────────────────────────────────────────────────────────────
+
+def _ollama_vision(image_paths: List[str], prompt: str, model: str = OLLAMA_VISION_MODEL) -> str:
+    """Call Ollama /api/generate with one or more images (base64-encoded). Returns raw text."""
+    images_b64 = []
+    for path in image_paths:
+        with open(path, "rb") as f:
+            images_b64.append(base64.b64encode(f.read()).decode())
+
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "images": images_b64,
+        "stream": False,
+    }
+    resp = requests.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload, timeout=120)
+    resp.raise_for_status()
+    return resp.json().get("response", "")
+
+
+def _tags_via_ollama(image_path: str, prompt_version: str = "v1") -> List[str]:
+    prompt = (
+        PROMPTS.get(prompt_version, PROMPTS["v1"])
+        + "\nReturn ONLY a JSON array of lowercase strings, e.g. [\"tag1\", \"tag2\"]."
+    )
+    raw = _ollama_vision([image_path], prompt)
+    start, end = raw.find("["), raw.rfind("]")
+    if start == -1 or end == -1:
+        return ["photography"]
+    return json.loads(raw[start : end + 1])
+
+
+def _describe_cluster_via_ollama(
+    image_paths: List[str],
+    user_preferences: Optional[dict],
+    user_prompt: Optional[str],
+    n_images: int = 4,
+) -> dict:
+    sampled = image_paths[:n_images]
+
+    context_lines = []
+    if user_prompt:
+        context_lines.append(f"The photographer's intent: {user_prompt}")
+    if user_preferences:
+        readable = "; ".join(f"{k}: {v}" for k, v in user_preferences.items())
+        context_lines.append(f"Their known preferences: {readable}")
+    user_context = ("\n".join(context_lines) + "\n\n") if context_lines else ""
+
+    prompt_text = (
+        PROMPTS["cluster_description"].format(n_images=len(sampled), user_context=user_context)
+        + "\nReturn ONLY the JSON object, no markdown."
+    )
+
+    raw = _ollama_vision(sampled, prompt_text)
+    start, end = raw.find("{"), raw.rfind("}")
+    if start == -1 or end == -1:
+        return {"title": "Untitled group", "description": ""}
     try:
-        # Initialize the client. It automatically picks up GEMINI_API_KEY from the environment.
-        client = genai.Client()
-        
-        # Read the image file
-        with open(image_path, "rb") as f:
-            image_bytes = f.read()
-            
-        # Determine mime type
-        mime_type, _ = mimetypes.guess_type(image_path)
-        if not mime_type:
-            mime_type = "image/jpeg" # fallback
-            
-        image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
-        
-        prompt = (
-            "You are an expert photography assistant. Analyze this image and generate 5-10 highly descriptive keywords. "
-            "Focus on lighting, mood, subject matter, and composition. Only use lowercase."
-        )
-        
-        # Try each model in order
-        last_error = None
-        for model in GEMINI_MODELS:
-            try:
-                print(f"  Trying model: {model}")
-                # We enforce a structured JSON output array of strings
-                response = client.models.generate_content(
-                    model=model,
-                    contents=[image_part, prompt],
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema={"type": "array", "items": {"type": "string"}}
-                    )
-                )
-                
-                # The response text should be a JSON array string
-                tags = json.loads(response.text)
-                print(f"✅ Successfully generated tags with {model}: {tags}")
-                return tags
-                
-            except Exception as model_error:
-                last_error = model_error
-                print(f"  ⚠️  Model {model} failed: {model_error}")
-                continue
-        
-        # If all models failed, raise the last error
-        if last_error:
-            raise last_error
-        
+        return json.loads(raw[start : end + 1])
+    except json.JSONDecodeError:
+        return {"title": "Untitled group", "description": ""}
+
+# ── Model singletons (lazy-loaded) ────────────────────────────────────────────
+
+_clip_model = None
+_sentence_model = None
+
+
+def _get_clip_model():
+    global _clip_model
+    if _clip_model is None:
+        from sentence_transformers import SentenceTransformer
+        print("Loading CLIP model (first call only)...")
+        _clip_model = SentenceTransformer("clip-ViT-B-32")
+    return _clip_model
+
+
+def _get_sentence_model():
+    global _sentence_model
+    if _sentence_model is None:
+        from sentence_transformers import SentenceTransformer
+        print("Loading SentenceTransformer model (first call only)...")
+        _sentence_model = SentenceTransformer("all-MiniLM-L6-v2")
+    return _sentence_model
+
+
+# ── Tag generation ────────────────────────────────────────────────────────────
+
+@traceable(name="generate_tags", tags=["photography"])
+def generate_tags(
+    image_path: str,
+    prompt_version: str = "v1",
+    model_name: str = "gemini-2.5-flash",
+    backend: Optional[str] = None,
+) -> List[str]:
+    """Generate descriptive tags for a photo. Backend defaults to TAGGING_BACKEND env var."""
+    active_backend = backend or TAGGING_BACKEND
+    print(f"ML: tagging {image_path} | backend={active_backend} prompt={prompt_version}")
+
+    if active_backend == "ollama":
+        try:
+            return _tags_via_ollama(image_path, prompt_version)
+        except Exception as e:
+            print(f"Ollama tagging failed: {e}")
+            return ["ai_generated", "photography"]
+
+    # --- Gemini path ---
+    prompt = PROMPTS.get(prompt_version, PROMPTS["v1"])
+    models_to_try = [model_name] + [m for m in FALLBACK_MODELS if m != model_name]
+    client = genai.Client()
+
+    with open(image_path, "rb") as f:
+        image_bytes = f.read()
+
+    mime_type, _ = mimetypes.guess_type(image_path)
+    if not mime_type:
+        mime_type = "image/jpeg"
+
+    image_part = types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+
+    for model in models_to_try:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=[image_part, prompt],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema={"type": "array", "items": {"type": "string"}},
+                ),
+            )
+            tags = json.loads(response.text)
+
+            rt = get_current_run_tree()
+            if rt is not None:
+                usage = getattr(response, "usage_metadata", None)
+                rt.extra = rt.extra or {}
+                rt.extra["metadata"] = {
+                    "model_used": model,
+                    "prompt_version": prompt_version,
+                    "input_tokens": getattr(usage, "prompt_token_count", None),
+                    "output_tokens": getattr(usage, "candidates_token_count", None),
+                    "total_tokens": getattr(usage, "total_token_count", None),
+                    "fallback_used": model != model_name,
+                }
+                rt.patch()
+
+            return tags
+
+        except Exception as e:
+            print(f"Model {model} failed: {e}")
+            if model == models_to_try[-1]:
+                return ["ai_generated", "photography"]
+
+    return ["ai_generated", "photography"]
+
+
+# ── Embedding generation ──────────────────────────────────────────────────────
+
+@traceable(name="generate_embedding", tags=["embedding"])
+def generate_embedding(
+    tags: List[str],
+    description: Optional[str] = None,
+    image_path: Optional[str] = None,
+    backend: str = "clip",
+) -> Optional[List[float]]:
+    """
+    Generate an embedding for an image.
+
+    Backends:
+      clip      — visual embedding from raw pixels (best for photo similarity)
+      sentence  — semantic text embedding from tags + description (fastest)
+      gemini    — text embedding from Gemini API (best semantic quality, costs quota)
+
+    Returns None on failure so upload still succeeds.
+    """
+    try:
+        if backend == "clip":
+            return _embed_clip(image_path, tags, description)
+        elif backend == "sentence":
+            return _embed_sentence(tags, description)
+        elif backend == "gemini":
+            return _embed_gemini(tags, description)
+        else:
+            print(f"Unknown embedding backend '{backend}', falling back to sentence")
+            return _embed_sentence(tags, description)
     except Exception as e:
-        print(f"❌ ML Service Error: {e}")
-        # Fallback to some default tags if all API calls fail
-        return ["ai_generated", "photography"]
+        print(f"Embedding failed (non-fatal): {e}")
+        return None
+
+
+def _embed_clip(image_path: Optional[str], tags: List[str], description: Optional[str]) -> Optional[List[float]]:
+    """512-dim visual embedding from image pixels."""
+    if not image_path:
+        # No image path — fall back to text via CLIP text encoder
+        text = description or ", ".join(tags)
+        return _get_clip_model().encode(text).tolist()
+
+    from PIL import Image as PILImage
+    img = PILImage.open(image_path).convert("RGB")
+    return _get_clip_model().encode(img).tolist()
+
+
+def _embed_sentence(tags: List[str], description: Optional[str]) -> List[float]:
+    """384-dim semantic text embedding."""
+    text = ", ".join(tags)
+    if description:
+        text = f"{description}. {text}"
+    return _get_sentence_model().encode(text).tolist()
+
+
+# ── Cluster description ───────────────────────────────────────────────────────
+
+@traceable(name="describe_cluster", tags=["storylines"])
+def describe_cluster(
+    image_paths: List[str],
+    user_preferences: Optional[dict] = None,
+    user_prompt: Optional[str] = None,
+    n_images: int = 4,
+    backend: Optional[str] = None,
+) -> dict:
+    """
+    Send representative images from a cluster to Gemini and get a coherent
+    narrative title + description.
+
+    Args:
+        image_paths: paths to representative images (sorted centroid-first)
+        user_preferences: dict from UserPreference table (injected as context)
+        user_prompt: optional free-text intent from the request ("for Instagram", etc.)
+        n_images: max images to send (keeps API cost low)
+
+    Returns:
+        {"title": str, "description": str}
+    """
+    active_backend = backend or TAGGING_BACKEND
+
+    if active_backend == "ollama":
+        try:
+            return _describe_cluster_via_ollama(image_paths, user_preferences, user_prompt, n_images)
+        except Exception as e:
+            print(f"Ollama describe_cluster failed: {e}")
+            return {"title": "Untitled group", "description": ""}
+
+    sampled = image_paths[:n_images]
+
+    # Build user context block
+    context_lines = []
+    if user_prompt:
+        context_lines.append(f"The photographer's intent: {user_prompt}")
+    if user_preferences:
+        readable = "; ".join(f"{k}: {v}" for k, v in user_preferences.items())
+        context_lines.append(f"Their known preferences: {readable}")
+    user_context = ("\n".join(context_lines) + "\n\n") if context_lines else ""
+
+    prompt_text = PROMPTS["cluster_description"].format(
+        n_images=len(sampled),
+        user_context=user_context,
+    )
+
+    try:
+        client = genai.Client()
+        contents = []
+        for path in sampled:
+            with open(path, "rb") as f:
+                image_bytes = f.read()
+            mime_type, _ = mimetypes.guess_type(path)
+            contents.append(
+                types.Part.from_bytes(data=image_bytes, mime_type=mime_type or "image/jpeg")
+            )
+        contents.append(prompt_text)
+
+        response = client.models.generate_content(
+            model=GEMINI_TAG_MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema={
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "description": {"type": "string"},
+                    },
+                    "required": ["title", "description"],
+                },
+            ),
+        )
+        return json.loads(response.text)
+
+    except Exception as e:
+        print(f"describe_cluster failed (non-fatal): {e}")
+        return {"title": "Untitled group", "description": ""}
+
+
+# ── Internal embedding helpers ────────────────────────────────────────────────
+
+def _embed_gemini(tags: List[str], description: Optional[str]) -> Optional[List[float]]:
+    """768-dim text embedding via Gemini API."""
+    text = ", ".join(tags)
+    if description:
+        text = f"{description}. Tags: {text}"
+    client = genai.Client()
+    result = client.models.embed_content(model=GEMINI_EMBED_MODEL, contents=text)
+    return list(result.embeddings[0].values)
