@@ -96,16 +96,26 @@ def _ollama_vision(image_paths: List[str], prompt: str, model: str = OLLAMA_VISI
     return resp.json().get("response", "")
 
 
+def _parse_json_tolerant(raw: str) -> list:
+    """Parse a JSON array from llava output, tolerating trailing commas."""
+    import re as _re
+    start, end = raw.find("["), raw.rfind("]")
+    if start == -1 or end == -1:
+        return []
+    chunk = raw[start : end + 1]
+    # Strip trailing commas before ] or }
+    chunk = _re.sub(r",\s*([\]}])", r"\1", chunk)
+    return json.loads(chunk)
+
+
 def _tags_via_ollama(image_path: str, prompt_version: str = "v1") -> List[str]:
     prompt = (
         PROMPTS.get(prompt_version, PROMPTS["v1"])
         + "\nReturn ONLY a JSON array of lowercase strings, e.g. [\"tag1\", \"tag2\"]."
     )
     raw = _ollama_vision([image_path], prompt)
-    start, end = raw.find("["), raw.rfind("]")
-    if start == -1 or end == -1:
-        return ["photography"]
-    return json.loads(raw[start : end + 1])
+    result = _parse_json_tolerant(raw)
+    return result if result else ["photography"]
 
 
 def _describe_cluster_via_ollama(
@@ -133,8 +143,11 @@ def _describe_cluster_via_ollama(
     start, end = raw.find("{"), raw.rfind("}")
     if start == -1 or end == -1:
         return {"title": "Untitled group", "description": ""}
+    import re as _re
+    chunk = raw[start : end + 1]
+    chunk = _re.sub(r",\s*([\]}])", r"\1", chunk)
     try:
-        return json.loads(raw[start : end + 1])
+        return json.loads(chunk)
     except json.JSONDecodeError:
         return {"title": "Untitled group", "description": ""}
 

@@ -4,6 +4,33 @@ _Update this file at the end of every session. Most recent entry at the top._
 
 ---
 
+## 2026-07-01
+
+### Done this session
+- **Fake test artifacts fixed** — `truncate_tables` fixture now deletes files <1KB from `static/images/` after each test. 14 leftover `fake-jpeg-bytes` files cleaned up.
+- **llava-phi3 added** — pulled and documented in `.env` alongside `llava`. `GEMINI_TAG_MODEL` now reads from env (was hardcoded). `.env` has clear comments for switching between all backends.
+- **Full pipeline run on 22 Krithika portraits** via `register_and_run.py` (llava + CLIP):
+  - Fixed bug: `generate_embedding(str(path))` was passing path as `tags` → identical embeddings for every image. Fixed to use keyword args.
+  - Fixed bug: llava sometimes outputs trailing commas in JSON arrays/objects → added `_parse_json_tolerant()` stripping trailing commas before parse. Applied to both tagging and cluster description.
+  - Fixed bug: SQLAlchemy `DetachedInstanceError` when accessing image attrs after session close → extract dicts while session is open.
+- **Results in `backend/storylines_output/`** — 2 clusters: 19 portraits (faces) + 3 foot/jewelry shots. `storylines_output.json` has the raw data.
+
+### Next session — pick up here
+- [ ] Open `backend/storylines_output/` in Finder and review the clustering results
+- [ ] Assess quality: does the 2-cluster split make sense? Are there sub-groups within the 19 portraits?
+- [ ] Consider re-running with `llava-phi3` once it finishes pulling, compare speed/quality
+- [ ] The silhouette scores were low (0.28 max) — expected for a tight portrait series. May want to force k=3 or k=4 to get finer groupings within the portraits
+
+### Backlog
+- [ ] Alembic migrations
+- [ ] Rate limiter: IP-based → user-based
+- [ ] Input validation (file size, magic bytes)
+- [ ] CLIP model warm-up on startup
+- [ ] Async tag generation for batch uploads
+- [ ] Feedback loop: photographer confirms/corrects tags → model learns their style
+
+---
+
 ## 2026-06-22
 
 ### Done this session
