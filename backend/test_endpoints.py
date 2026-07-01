@@ -39,13 +39,21 @@ def create_tables():
 
 @pytest.fixture(autouse=True)
 def truncate_tables(create_tables):
-    """Delete all rows before each test so each test starts clean."""
+    """Delete all rows before each test and clean up any files written to static/images/."""
+    static_dir = Path("static/images")
     with Session(engine) as session:
         session.exec(delete(Image))
         session.exec(delete(UserPreference))
         session.exec(delete(User))
         session.commit()
     yield
+    # Remove fake files written during the test
+    for f in static_dir.glob("*.jpg"):
+        try:
+            if f.stat().st_size < 1024:  # only remove obvious test artifacts
+                f.unlink()
+        except OSError:
+            pass
 
 
 @pytest.fixture
