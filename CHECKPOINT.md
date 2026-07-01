@@ -4,6 +4,37 @@ _Update this file at the end of every session. Most recent entry at the top._
 
 ---
 
+## 2026-06-22
+
+### Done this session
+- **Merged PR #3** (`dev` → `master`) — resolved conflicts from feature/auth-models-security-fix branch, master is now fully up to date.
+- **Ollama set as default backend** — `TAGGING_BACKEND=ollama`, `OLLAMA_BASE_URL`, `OLLAMA_VISION_MODEL=llava` added to `.env`. Ollama is installed and `llava` model is pulled.
+- **Rewrote all prompts** — removed curator/aesthetic framing entirely. v1/v2/v3 tagging prompts and `cluster_description` are now purely observational: describe what is literally in the frame, no aesthetic opinion or narrative imposed. Core philosophy: model learns from photographer's past data, acts as assistant only.
+
+### Still needs to be done (immediate — start here next session)
+- [ ] **Run Krithika portraits storylines with Ollama** — backend was already running on port 8000 when we stopped. Need to:
+  1. Confirm backend is up: `curl http://localhost:8000/`
+  2. Check how many images are in DB: `GET /images/` (may need login if auth required)
+  3. If DB is empty, re-upload Krithika portraits from `backend/static/images/` (79 photos there)
+  4. Run `POST /images/storylines` with `embedding_backend=clip` and `tagging_backend=ollama`
+  5. Save the JSON output and run `organize_storylines.py` to get the folder tree
+- [ ] Re-tag existing images with new observational prompts (old tags were generated with aesthetic-framing prompts)
+
+### Design direction confirmed this session
+- **Ollama is the primary backend, not a fallback** — photos stay local, always
+- **Model philosophy**: the AI observes and describes; it learns from the photographer's past choices rather than imposing aesthetic judgment. It is the user's assistant, nothing more.
+- **Future**: build a feedback/learning loop so the model adapts to each photographer's individual style over time
+
+### Backlog
+- [ ] Alembic migrations
+- [ ] Rate limiter: IP-based → user-based
+- [ ] Input validation (file size, magic bytes)
+- [ ] CLIP model warm-up on startup
+- [ ] Async tag generation for batch uploads
+- [ ] Feedback loop: let photographer confirm/correct tags → fine-tune or RAG-weight future tagging
+
+---
+
 ## 2026-06-14
 
 ### Done this session

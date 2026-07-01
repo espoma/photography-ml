@@ -32,37 +32,41 @@ OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "llava")
 
 PROMPTS: dict[str, str] = {
     # ── Tagging prompts ───────────────────────────────────────────────────────
+    # Observational only — describe what is literally present, no aesthetic opinion.
     "v1": (
-        "You are an expert photography assistant. Analyze this image and generate 5-10 highly "
-        "descriptive keywords. Focus on lighting, mood, subject matter, and composition. "
-        "Only use lowercase."
+        "Look at this photo and list 5-10 tags describing exactly what you see: "
+        "who or what is in the frame, the light source and quality, colours present, "
+        "background or setting, and any visible technical choices (shallow depth, motion blur, etc.). "
+        "Do not judge or interpret — only observe. Lowercase only."
     ),
     "v2": (
-        "Analyze this photograph and return 5-10 descriptive tags covering: subject "
-        "(person/landscape/object), lighting quality (harsh/soft/natural), mood/emotion, "
-        "color palette, and photographic style. Lowercase only."
+        "Describe this photo using 5-10 lowercase tags. Cover: subject (what/who), "
+        "light (source, direction, quality), colours, setting or background, "
+        "camera distance (close-up/mid/wide), and any visible post-processing (B&W, grain, etc.). "
+        "State only what you can see. No aesthetic opinions."
     ),
     "v3": (
-        "You are a photography metadata specialist. Generate exactly 8 tags for this image. "
-        "Include one tag each for: primary subject, secondary elements, lighting, mood, "
-        "composition style, color temperature, photographic technique, and post-processing "
-        "style. Be specific and lowercase."
+        "List exactly 8 lowercase tags for this photo. One tag each for: "
+        "primary subject, secondary elements in frame, light source, light quality, "
+        "dominant colour(s), background/setting, camera-to-subject distance, "
+        "and any visible processing or format choice. Observe only — no interpretation."
     ),
 
     # ── Cluster description prompt ────────────────────────────────────────────
     # Used in describe_cluster(). {user_context} and {n_images} are filled at call time.
     "cluster_description": (
-        "You are a photography curator helping a photographer organise their portfolio.\n\n"
-        "You are looking at {n_images} images that were grouped together by visual and "
-        "thematic similarity. They are part of a larger curated selection the photographer "
-        "wants to publish.\n\n"
+        "You are helping a photographer understand their own work.\n\n"
+        "You are looking at {n_images} photos the photographer grouped together. "
+        "Your job is to describe — as neutrally and specifically as possible — "
+        "what these photos visually have in common.\n\n"
         "{user_context}"
-        "Your task:\n"
-        "1. Write a short, evocative TITLE (3-5 words) that captures the narrative essence "
-        "of this group — think exhibition label or Instagram series name, not a tag.\n"
-        "2. Write 1-2 sentences describing what coherently ties these images together: "
-        "the visual story, shared mood, recurring motif, or emotional thread.\n\n"
-        "Be specific to what you actually see. Think like a curator, not a classifier.\n\n"
+        "Tasks:\n"
+        "1. Write a SHORT TITLE (3-5 words) that names the shared visual element or situation "
+        "you actually see — not a poetic interpretation.\n"
+        "2. Write 1-2 sentences stating the concrete visual or situational thread: "
+        "what subject, light condition, setting, or framing recurs across these photos.\n\n"
+        "Do not impose meaning, narrative, or aesthetic judgment. "
+        "Describe what the photographer chose to photograph, not what it 'means'.\n\n"
         'Respond in JSON: {{"title": "...", "description": "..."}}'
     ),
 }
