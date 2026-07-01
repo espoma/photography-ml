@@ -1,16 +1,16 @@
 """
 ML service: tag generation + embedding generation.
 
-Embedding backends (pick one per deployment):
+Embedding backends (set EMBEDDING_BACKEND env var):
   clip      — visual image embeddings via CLIP ViT-B/32 (local, 512-dim, best for photo similarity)
   sentence  — semantic text embeddings via all-MiniLM-L6-v2 (local, 384-dim, fast)
   gemini    — text embeddings via Gemini text-embedding-004 (API, 768-dim)
 
 Tagging/description backends (set TAGGING_BACKEND env var):
-  gemini    — Gemini 2.5-flash multimodal (default, sends images to Google)
-  ollama    — local vision model via Ollama (images stay on-device)
-
-Set OLLAMA_BASE_URL (default: http://localhost:11434) and OLLAMA_VISION_MODEL (default: llava).
+  ollama    — fully local via Ollama, images never leave the machine (default)
+              OLLAMA_VISION_MODEL: llava (7B, accurate) | llava-phi3 (3.8B, faster)
+  gemini    — Google Gemini API, sends images to Google
+              GEMINI_TAG_MODEL: gemini-2.5-flash | gemini-1.5-flash | gemini-1.5-flash-8b
 """
 import base64
 import json
@@ -24,9 +24,10 @@ from google.genai import types
 from langsmith import traceable
 from langsmith.run_helpers import get_current_run_tree
 
-TAGGING_BACKEND = os.getenv("TAGGING_BACKEND", "gemini")
+TAGGING_BACKEND = os.getenv("TAGGING_BACKEND", "ollama")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "llava")
+OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "llava-phi3")
+GEMINI_TAG_MODEL = os.getenv("GEMINI_TAG_MODEL", "gemini-2.5-flash")
 
 # ── Prompt library ────────────────────────────────────────────────────────────
 
@@ -72,7 +73,6 @@ PROMPTS: dict[str, str] = {
 }
 
 FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-flash-8b"]
-GEMINI_TAG_MODEL = "gemini-2.5-flash"
 GEMINI_EMBED_MODEL = "models/text-embedding-004"
 
 
@@ -168,7 +168,7 @@ def _get_sentence_model():
 def generate_tags(
     image_path: str,
     prompt_version: str = "v1",
-    model_name: str = "gemini-2.5-flash",
+    model_name: str = GEMINI_TAG_MODEL,
     backend: Optional[str] = None,
 ) -> List[str]:
     """Generate descriptive tags for a photo. Backend defaults to TAGGING_BACKEND env var."""
